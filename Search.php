@@ -5,8 +5,9 @@
 	interface QueryTree {
 		/**
 		 * 検索結果を取得するSQLの取得
+		 * @param $seq SQLの構築の際に用いるシーケンス
 		 */
-		public function sql(): string;
+		public function sql(int &$seq): string;
 
 		/**
 		 * フラット化したバインド変数の取得
@@ -35,8 +36,9 @@
 
 		/**
 		 * 検索結果を取得するSQLの取得
+		 * @param $seq SQLの構築の際に用いるシーケンス
 		 */
-		public function sql(): string {
+		public function sql(int &$seq): string {
 			return self::SQL_PART_SELECT;
 		}
 
@@ -63,8 +65,6 @@
 	abstract class BinaryTree implements QueryTree {
 		/** @var array<QueryTree> 子要素 */
 		public array $children = [];
-		/** SQLにおいて連結をする演算子 */
-		private string $sqlOp;
 		/** クエリにおいて連結をする演算子 */
 		private string $queryOp;
 		/** 結合の優先順位 */
@@ -114,8 +114,7 @@
 			return -1;
 		}
 
-		public function __construct(array $children, string $sqlOp, string $queryOp, int $level, bool $fixfirst = false) {
-			$this->sqlOp = $sqlOp;
+		public function __construct(array $children, string $queryOp, int $level, bool $fixfirst = false) {
 			$this->queryOp = $queryOp;
 			$this->level = $level;
 
@@ -153,20 +152,26 @@
 
 		/**
 		 * 検索結果を取得するSQLの取得
+		 * @param $seq SQLの構築の際に用いるシーケンス
 		 */
-		public function sql(): string {
-			$result = $this->children[0]->sql();
+		public function sql(int &$seq): string {
+			$result = $this->children[0]->sql($seq);
 			if (count($this->children) > 0) {
-				$result = "({$result})";
-
-				// 各クエリを$queryOpで連結
+				// 各クエリに対してsqlForBinOpを実行して連結
 				for ($i = 1; $i < count($this->children); ++$i) {
-					$sql = $this->children[$i]->sql();
-					$result .= "{$this->sqlOp}({$sql})";
+					$result = $this->sqlForBinOp($result, $this->children[$i], $seq);
 				}
 			}
 			return $result;
 		}
+
+		/**
+		 * 2項演算のためのSQL
+		 * @param $lhs 左項
+		 * @param $rhs 右項
+		 * @param $seq SQLの構築の際に用いるシーケンス
+		 */
+		protected abstract function sqlForBinOp(string $lhs, QueryTree $rhs, int &$seq): string;
 
 		/**
 		 * フラット化したバインド変数の取得
@@ -209,8 +214,25 @@
 	 * AND検索についてのツリー
 	 */
 	class AndTree extends BinaryTree {
+		/** 検索結果のクエリの一部を得るためのSQL */
+		private const SQL_PART_SELECT = 'SELECT t%d.article_id FROM (%s) AS t%d INNER JOIN (%s) AS t%d ON t%d.article_id = t%d.article_id';
+
 		public function __construct(array $children) {
-			parent::__construct($children, 'INTERSECT', ' ', 2);
+			parent::__construct($children, ' ', 2);
+		}
+
+		/**
+		 * 2項演算のためのSQL
+		 * @param $lhs 左項
+		 * @param $rhs 右項
+		 * @param $seq SQLの構築の際に用いるシーケンス
+		 */
+		protected function sqlForBinOp(string $lhs, QueryTree $rhs, int &$seq): string {
+			$t1 = $seq++;
+			$t2 = $seq++;
+			return sprintf(self::SQL_PART_SELECT, $t1, $lhs, $t1, $rhs->sql($seq), $t2, $t1, $t2);
+			// MySQL 8.0以降の場合
+			//return "({$lhs}) INTERSECT ({$rhs->sql($seq)})";
 		}
 	}
 
@@ -219,7 +241,17 @@
 	 */
 	class OrTree extends BinaryTree {
 		public function __construct(array $children) {
-			parent::__construct($children, 'UNION', 'OR', 1);
+			parent::__construct($children, 'OR', 1);
+		}
+
+		/**
+		 * 2項演算のためのSQL
+		 * @param $lhs 左項
+		 * @param $rhs 右項
+		 * @param $seq SQLの構築の際に用いるシーケンス
+		 */
+		protected function sqlForBinOp(string $lhs, QueryTree $rhs, int &$seq): string {
+			return "({$lhs}) UNION ({$rhs->sql($seq)})";
 		}
 	}
 
@@ -227,8 +259,24 @@
 	 * マイナス検索についてのツリー
 	 */
 	class MinusTree extends BinaryTree {
+		/** 検索結果のクエリの一部を得るためのSQL */
+		private const SQL_PART_SELECT = 'SELECT article_id FROM (%s) AS t%d WHERE article_id NOT IN (%s)';
+
 		public function __construct(array $children) {
-			parent::__construct($children, 'EXCEPT', '-', 1, true);
+			parent::__construct($children, '-', 1, true);
+		}
+
+		/**
+		 * 2項演算のためのSQL
+		 * @param $lhs 左項
+		 * @param $rhs 右項
+		 * @param $seq SQLの構築の際に用いるシーケンス
+		 */
+		protected function sqlForBinOp(string $lhs, QueryTree $rhs, int &$seq): string {
+			$t1 = $seq++;
+			return sprintf(self::SQL_PART_SELECT, $lhs, $t1, $rhs->sql($seq));
+			// MySQL 8.0以降の場合
+			//return "({$lhs}) EXCEPT ({$rhs->sql($seq)})";
 		}
 	}
 
@@ -246,9 +294,10 @@
 
 		/**
 		 * 検索結果を取得するSQLの取得
+		 * @param $seq SQLの構築の際に用いるシーケンス
 		 */
-		public function sql(): string {
-			return "{$this->child->sql()}";
+		public function sql(int &$seq): string {
+			return "{$this->child->sql($seq)}";
 		}
 
 		/**
@@ -501,14 +550,16 @@
 			if (!array_key_exists($order, self::ORDER_MAP)) {
 				throw new \Exception("不明な並べ替えの指定'$order'がされました");
 			}
-			return $this->tree ? sprintf(self::SQL_SELECT, $this->tree->sql(), self::ORDER_MAP[$order], $limit, $offset) : sprintf(self::SQL_SELECT_EMPTY, self::ORDER_MAP[$order], $limit, $offset);
+			$seq = 0;
+			return $this->tree ? sprintf(self::SQL_SELECT, $this->tree->sql($seq), self::ORDER_MAP[$order], $limit, $offset) : sprintf(self::SQL_SELECT_EMPTY, self::ORDER_MAP[$order], $limit, $offset);
 		}
 		
 		/**
 		 * 検索結果全体の件数を取得するSQLの取得
 		 */
 		public function count() {
-			return $this->tree ? sprintf(self::SQL_COUNT, $this->tree->sql()) : self::SQL_COUNT_EMPTY;
+			$seq = 0;
+			return $this->tree ? sprintf(self::SQL_COUNT, $this->tree->sql($seq)) : self::SQL_COUNT_EMPTY;
 		}
 
 		/**
