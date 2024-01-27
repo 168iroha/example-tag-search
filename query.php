@@ -1,5 +1,5 @@
 <?php
-	require_once $_SERVER['DOCUMENT_ROOT'].'/Search.php';
+	require_once 'Search.php';
 
 	/**
 	 * PDOを取得する
@@ -36,7 +36,8 @@
 	$execQuery = false;
 
 	$config = 'db.config.json';
-	$cacheTable = new TagSearchCaches($_SERVER['DOCUMENT_ROOT'].'/cache', function () use($config, &$execQuery) { return getPDO($config, $execQuery); });
+	$cacheTable = new TagSearchCaches('cache', function () use($config, &$execQuery) { return getPDO($config, $execQuery); });
+	$query = new Query($cacheTable, fn () => $cacheTable->getPDO());
 	$idList = [];
 	$count = 0;
 
@@ -46,11 +47,22 @@
 			case 'GET':
 				// キャッシュを利用した検索結果の取得
 				$builder = new BuildQueryOfTagSearch($_GET['str'] ?? '');
-				$query = new Query($builder, $cacheTable, fn () => $cacheTable->getPDO());
-				['id-list' => $idList, 'count' => $count] = $query->get(max((int)($_GET['page'] ?? 1), 1), BuildQueryOfTagSearch::DESC_POSTDATE);
+				['id-list' => $idList, 'count' => $count] = $query->get($builder, max((int)($_GET['page'] ?? 1), 1), BuildQueryOfTagSearch::DESC_POSTDATE);
 				break;
 			case 'POST':
 				switch ($_POST['command']) {
+					case 'insert-article':
+						// 記事の追加
+						$postDate = (new \DateTime($_POST['id']))->format('YmdHi');
+						$id = (int)$postDate;
+						$tagList = explode(',', $_POST['tag-list']);
+						$query->set($id, $postDate, (new \DateTime())->format('YmdHi'), $tagList);
+						break;
+					case 'delete-article':
+						// 記事の削除
+						$id = (int)((new \DateTime($_POST['id']))->format('YmdHi'));
+						$query->delete($id);
+						break;
 					case 'delete-tag':
 						// タグによるキャッシュの削除
 						$cacheTable->deleteByTag(BuildQueryOfTagSearch::normToken($_POST['str']));
@@ -90,6 +102,23 @@
 					<li><?= $id ?></li>
 				<?php } ?>
 			</ol>
+		</section>
+		<section>
+			<h2>記事の追加（日時はIDとなる）</h2>
+			<form method="POST">
+				<input name="command" type="hidden" value="insert-article">
+				<input name="id" type="datetime-local" required>
+				<input name="tag-list" placeholder="カンマ区切りのタグリストを入力：例：AAA,BBB,CCC" required>
+				<button type="submit">追加</button>
+			</form>
+		</section>
+		<section>
+			<h2>記事の削除（日時はIDとなる）</h2>
+			<form method="POST">
+				<input name="command" type="hidden" value="delete-article">
+				<input name="id" type="datetime-local" required>
+				<button type="submit">削除</button>
+			</form>
 		</section>
 		<section>
 			<h2>タグによるキャッシュの削除</h2>

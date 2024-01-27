@@ -823,7 +823,7 @@
 				}
 				else {
 					// 何か異常があってDBデータの削除のみ失敗した場合は更新のみ行う
-					$this->pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?')->execute([$expiration, $key]);
+					$pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?')->execute([$expiration, $key]);
 				}
 				$pdo->commit();
 			}
@@ -946,6 +946,7 @@
 					$key = $row['id'];
 					$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
 				}
+				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
 				$pdo->commit();
 			}
 			catch (\PDOException $e) {
@@ -993,6 +994,7 @@
 						$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
 					}
 				}
+				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
 				$pdo->commit();
 			}
 			catch (PDOException $e) {
@@ -1009,16 +1011,20 @@
 		/** クエリで取得する最大件数 */
 		const MAX_SHOW_COUNT = 10;
 		/** クエリを構築するためのオブジェクト */
-		private \BuildQueryOfTagSearch $builder;
-		/** クエリを構築するためのオブジェクト */
 		private \TagSearchCaches $cacheTable;
 		/** PDOを返すオブジェクト */
 		private \Closure $callback;
 		/** $callbackの戻り値のキャッシュ */
 		private ?\PDO $pdo = null;
 
-		public function __construct(\BuildQueryOfTagSearch $builder, \TagSearchCaches $cacheTable, \Closure $callback) {
-			$this->builder = $builder;
+		/**
+		 * トークンを正規化する
+		 */
+		public static function normToken(string $token) {
+			return mb_strtoupper(normalizer_normalize(trim($token), Normalizer::FORM_KC));
+		}
+
+		public function __construct(\TagSearchCaches $cacheTable, \Closure $callback) {
 			$this->cacheTable = $cacheTable;
 			$this->callback = $callback;
 		}
@@ -1045,15 +1051,16 @@
 
 		/**
 		 * クエリの結果の取得
+		 * @param $builder クエリを構築するためのオブジェクト
 		 * @param $page ページ(オフセットは1)
 		 * @param $order 並べ替え
 		 * @throws \PDOException DBからの検索結果の取得に失敗した際に送信される
 		 */
-		public function get(int $page, int $order): array {
+		public function get(\BuildQueryOfTagSearch $builder, int $page, int $order): array {
 			$count = null;
 			$idList = null;
 			// 正規化したクエリからキャッシュのキーを計算
-			$key = hash('sha256', $this->builder->query());
+			$key = hash('sha256', $builder->query());
 			$prefix = "{$order}.";
 
 			if ($this->cacheTable->has($key)) {
@@ -1073,16 +1080,16 @@
 			if ($idList === null) {
 				// 検索結果を取得するクエリを実行
 				$pdo = $this->getPDO();
-				$stmt = $pdo->prepare($this->builder->select(self::MAX_SHOW_COUNT, ($page - 1) * self::MAX_SHOW_COUNT, $order));
-				$stmt->execute($this->builder->bindVal());
+				$stmt = $pdo->prepare($builder->select(self::MAX_SHOW_COUNT, ($page - 1) * self::MAX_SHOW_COUNT, $order));
+				$stmt->execute($builder->bindVal());
 				$idList = array_map(fn (array $arr) => $arr[0], $stmt->fetchAll(\PDO::FETCH_NUM));
 				unset($stmt);
 			}
 			if ($count === null) {
 				// 全体件数を取得するクエリを実行
 				$pdo = $this->getPDO();
-				$stmt = $pdo->prepare($this->builder->count());
-				$stmt->execute($this->builder->bindVal());
+				$stmt = $pdo->prepare($builder->count());
+				$stmt->execute($builder->bindVal());
 				$count = $stmt->fetch(\PDO::FETCH_NUM)[0];
 				unset($stmt);
 			}
@@ -1093,8 +1100,8 @@
 					// キャッシュが存在しないときは新規作成
 					$this->cacheTable->create(
 						$key,
-						$this->builder->bindVal(),
-						$this->getExpiration($idList, $count, $this->builder->bindVal()),
+						$builder->bindVal(),
+						$this->getExpiration($idList, $count, $builder->bindVal()),
 						[
 							'count' => $count,
 							'max-page' => floor(($count - 1) / self::MAX_SHOW_COUNT) + 1
@@ -1123,5 +1130,159 @@
 			}
 
 			return ['id-list' => $idList, 'count'=> $count];
+		}
+
+		/**
+		 * クエリ結果に出現するようにタグ情報を登録する
+		 * @param $id 記事のキー
+		 * @param $postDate 投稿日時
+		 * @param $updateDate 更新日時
+		 * @param $tagList タグのリスト
+		 * @param $updateCache trueのときキャッシュを更新する
+		 */
+		public function set(int $id, string $postDate, string $updateDate, array $tagList, bool $updateCache = true) {
+			$pdo = $this->getPDO();
+			// タグ情報を挿入するステートメント
+			$insertPostedArticlesStmt = $pdo->prepare('INSERT INTO posted_articles(id, post_date, update_date) VALUES (:id, :post_date, :update_date)');
+			$updatePostedArticlesStmt = $pdo->prepare('UPDATE posted_articles SET post_date = :post_date, update_date = :update_date WHERE id = :id');
+			$insertTagsStmt = $pdo->prepare('INSERT INTO tags(id, org_name, norm_name) VALUES (:id, :org_name, :norm_name)');
+			$insertPostedArticlesTagsStmt = $pdo->prepare('INSERT INTO posted_articles_tags(article_id, tag_id) VALUES (:article_id, :tag_id)');
+			// タグを選択するステートメント
+			$selectTagsIdStmt = $pdo->prepare('SELECT id FROM tags WHERE norm_name = :norm_name');
+			$selectTagsListStmt = $pdo->prepare('SELECT t2.norm_name FROM posted_articles_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t1.article_id = :id');
+			// 記事を選択するステートメント
+			$selectArticleIdStmt = $pdo->prepare('SELECT id FROM posted_articles WHERE id = :id');
+
+			// 変更があったタグのリスト
+			$changeTagList = [];
+
+			$pdo->beginTransaction();
+			// 記事情報の登録
+			try {
+				$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$selectArticleIdStmt->execute();
+				// 検索対象をInsertするかUpdateするかの選択
+				$insertPostedArticleFlag = $selectArticleIdStmt->rowCount() === 0;
+				$mergePostedArticleStmt = $insertPostedArticleFlag ? $insertPostedArticlesStmt : $updatePostedArticlesStmt;
+
+				// すでに登録済みのタグのリスト
+				$beforeTagList = [];
+				if (!$insertPostedArticleFlag) {
+					$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+					$selectTagsListStmt->execute();
+					$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
+				}
+				// 新規に挿入するタグリストと削除するタグリスト
+				$normTagList = array_map(fn ($tag) => self::normToken($tag), $tagList);
+				$insertTagList = [...array_diff($normTagList, $beforeTagList)];
+				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
+				$changeTagList = [...$insertTagList, ...$deleteTagList];
+
+				// 検索対象の登録
+				$mergePostedArticleStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$mergePostedArticleStmt->bindValue(':post_date', $postDate, \PDO::PARAM_STR);
+				$mergePostedArticleStmt->bindValue(':update_date', $updateDate, \PDO::PARAM_STR);
+				$mergePostedArticleStmt->execute();
+
+				// タグ情報の登録
+				$cnt = 0;
+				foreach ($insertTagList as $tag) {
+					$selectTagsIdStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
+					$selectTagsIdStmt->execute();
+					// tag_idの取得
+					if ($selectTagsIdStmt->rowCount() === 0) {
+						$tagId = $id * 100 + (++$cnt);
+						// tagsへの挿入
+						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_INT);
+						$insertTagsStmt->bindValue(':org_name', trim($tag), \PDO::PARAM_STR);
+						$insertTagsStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
+						$insertTagsStmt->execute();
+					}
+					else {
+						$tagId = (int)$selectTagsIdStmt->fetch()['id'];
+					}
+					// posted_articles_tagsへの挿入
+					$insertPostedArticlesTagsStmt->bindValue(':article_id', $id, \PDO::PARAM_INT);
+					$insertPostedArticlesTagsStmt->bindValue(':tag_id', $tagId, \PDO::PARAM_INT);
+					$insertPostedArticlesTagsStmt->execute();
+				}
+				// タグ情報の削除
+				if (count($deleteTagList) > 0) {
+					$stmt = $pdo->prepare('DELETE FROM posted_articles_tags WHERE article_id = ? AND tag_id IN (SELECT id FROM tags WHERE norm_name IN ('.implode(',', array_fill(0, count($deleteTagList), '?')).'))');
+					$stmt->bindValue(1, $id, \PDO::PARAM_INT);
+					for ($i = 0; $i < count($deleteTagList); ++$i) {
+						$stmt->bindValue(2 + $i, $deleteTagList[$i], \PDO::PARAM_STR);
+					}
+					$stmt->execute();
+				}
+
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+
+			if ($updateCache) {
+				// 変更に係るタグに関連するキャッシュの削除
+				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
+				foreach ($changeTagList as $tag) {
+					try {
+						$this->cacheTable->deleteByTag($tag);
+					}
+					catch (\Exception $e) {
+						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+						// 本来はログなどでイベントの管理はした方がいい
+					}
+				}
+			}
+		}
+
+		/**
+		 * 検索情報を削除する
+		 * @param $id 記事のキー
+		 */
+		public function delete(int $id) {
+			$pdo = $this->getPDO();
+			$pdo->beginTransaction();
+
+			// 削除対象のタグの取得
+			$selectTagsListStmt = $pdo->prepare('SELECT t2.norm_name FROM posted_articles_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t1.article_id = :id');
+			$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$selectTagsListStmt->execute();
+			$deleteTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
+
+			// 記事情報の削除
+			try {
+				// 記事とタグの関連付けの破棄
+				$stmt = $pdo->prepare('DELETE FROM posted_articles_tags WHERE article_id = :id');
+				$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$stmt->execute();
+				// 記事情報の破棄
+				$stmt = $pdo->prepare('DELETE FROM posted_articles WHERE id = :id');
+				$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$stmt->execute();
+				
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+
+			// 削除の場合はキャッシュの更新を強制する
+			{
+				// 変更に係るタグに関連するキャッシュの削除
+				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
+				foreach ($deleteTagList as $tag) {
+					try {
+						$this->cacheTable->deleteByTag($tag);
+					}
+					catch (\Exception $e) {
+						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+						// 本来はログなどでイベントの管理はした方がいい
+					}
+				}
+			}
 		}
 	}
