@@ -357,6 +357,9 @@
 			$str = '';
 			$c = $this->getCurrentChar();
 			do {
+				if ($c === null) {
+					break;
+				}
 				switch ($t = trim($c)) {
 					case '':
 						// 単語区切りの場合は終了
