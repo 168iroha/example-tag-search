@@ -93,8 +93,8 @@
 		<section>
 			<h2>検索</h2>
 			<form method="GET">
-				<input name="str" value="<?= htmlspecialchars($_GET['str'] ?? '') ?>">
-				<input name="page" type="number" value="<?= htmlspecialchars($_GET['page'] ?? 1) ?>">
+				<input name="str" value="<?= htmlspecialchars((string)($_GET['str'] ?? '')) ?>">
+				<input name="page" type="number" value="<?= htmlspecialchars((string)($_GET['page'] ?? 1)) ?>">
 				<button type="submit">検索</button>
 			</form>
 			<div>Count:<?= $count ?></div>
