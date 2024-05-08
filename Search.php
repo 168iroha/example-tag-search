@@ -786,7 +786,7 @@
 			}
 			// キャッシュを示すファイルの出力
 			$path = $this->getCachePath($key, $page, $prefix);
-			if (!file_put_contents($path, json_encode($idList, JSON_PRETTY_PRINT), LOCK_EX)) {
+			if (false === file_put_contents($path, json_encode($idList, JSON_PRETTY_PRINT), LOCK_EX)) {
 				throw new \Exception("キー{$key}かつページ{$page}のキャッシュデータの出力に失敗しました");
 			}
 			// キャッシュの設定が完了した際は有効期限を延長する
@@ -844,7 +844,7 @@
 			}
 
 			// 有効期限に関する設定ファイルの構築
-			if (!file_put_contents($cacheBase.self::EXPIRATION_NAME, json_encode([
+			if (false === file_put_contents($cacheBase.self::EXPIRATION_NAME, json_encode([
 				'expiration' => $expiration,
 				'interval' => $interval
 			], JSON_PRETTY_PRINT), LOCK_EX)) {
@@ -852,7 +852,7 @@
 			}
 
 			// コンフィグの構築
-			if (!file_put_contents($cacheBase.self::CONFIG_NAEM, json_encode($config, JSON_PRETTY_PRINT), LOCK_EX)) {
+			if (false === file_put_contents($cacheBase.self::CONFIG_NAEM, json_encode($config, JSON_PRETTY_PRINT), LOCK_EX)) {
 				throw new \Exception("キー{$key}のコンフィグの出力に失敗しました");
 			}
 		}
