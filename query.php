@@ -33,6 +33,63 @@
 		);
 	}
 
+	/**
+	 * 記事情報を登録する
+	 * @param $pdo PDO
+	 * @param $id 記事のキー
+	 * @param $postDate 投稿日時
+	 * @param $updateDate 更新日時
+	 */
+	function setArticle(\PDO $pdo, int $id, string $postDate, string $updateDate) {
+		// 記事を挿入するステートメント
+		$insertPostedArticlesStmt = $pdo->prepare('INSERT INTO posted_articles(id, post_date, update_date) VALUES (:id, :post_date, :update_date)');
+		$updatePostedArticlesStmt = $pdo->prepare('UPDATE posted_articles SET post_date = :post_date, update_date = :update_date WHERE id = :id');
+		// 記事を選択するステートメント
+		$selectArticleIdStmt = $pdo->prepare('SELECT id FROM posted_articles WHERE id = :id');
+
+		$pdo->beginTransaction();
+		try {
+			$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$selectArticleIdStmt->execute();
+			// 記事をInsertするかUpdateするかの選択
+			$insertPostedArticleFlag = $selectArticleIdStmt->rowCount() === 0;
+			$mergePostedArticleStmt = $insertPostedArticleFlag ? $insertPostedArticlesStmt : $updatePostedArticlesStmt;
+
+			// 記事の登録
+			$mergePostedArticleStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$mergePostedArticleStmt->bindValue(':post_date', $postDate, \PDO::PARAM_STR);
+			$mergePostedArticleStmt->bindValue(':update_date', $updateDate, \PDO::PARAM_STR);
+			$mergePostedArticleStmt->execute();
+
+			$pdo->commit();
+		}
+		catch (\PDOException $e) {
+			$pdo->rollBack();
+			throw $e;
+		}
+	}
+
+	/**
+	 * 記事情報を削除する
+	 * @param $pdo PDO
+	 * @param $id 記事のキー
+	 */
+	function deleteArticle(\PDO $pdo, int $id) {
+		$pdo->beginTransaction();
+		try {
+			// 記事情報の破棄
+			$stmt = $pdo->prepare('DELETE FROM posted_articles WHERE id = :id');
+			$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$stmt->execute();
+			
+			$pdo->commit();
+		}
+		catch (\PDOException $e) {
+			$pdo->rollBack();
+			throw $e;
+		}
+	}
+
 	// SQLが実行されたかを記憶する変数
 	$execQuery = false;
 
@@ -57,12 +114,14 @@
 						$postDate = (new \DateTime($_POST['id']))->format('YmdHi');
 						$id = (int)$postDate;
 						$tagList = explode(',', $_POST['tag-list']);
-						$query->set($id, $postDate, (new \DateTime())->format('YmdHi'), $tagList);
+						setArticle($query->getPDO(), $id, $postDate, (new \DateTime())->format('YmdHi'));
+						$query->set($id, $tagList);
 						break;
 					case 'delete-article':
 						// 記事の削除
 						$id = (int)((new \DateTime($_POST['id']))->format('YmdHi'));
 						$query->delete($id);
+						deleteArticle($query->getPDO(), $id);
 						break;
 					case 'delete-tag':
 						// タグによるキャッシュの削除
