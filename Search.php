@@ -125,11 +125,12 @@
 			foreach ($children as $child) {
 				if ($child instanceof ParenTree) {
 					// 括弧内の演算がthisと同じ演算もしくはTagTreeなら展開する
-					if ($child->child instanceof BinaryTree && $queryOp === $child->child->queryOp) {
-						array_push($unsortChildren, ...$child->child->children);
+					$grandchild = $child->child;
+					if ($grandchild instanceof BinaryTree && $queryOp === $grandchild->queryOp) {
+						array_push($unsortChildren, ...$grandchild->children);
 					}
-					else if ($child->child instanceof TagTree) {
-						$unsortChildren[] = $child->child;
+					else if ($grandchild instanceof TagTree) {
+						$unsortChildren[] = $grandchild;
 					}
 					else {
 						$unsortChildren[] = $child;
