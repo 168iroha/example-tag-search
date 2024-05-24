@@ -1141,23 +1141,17 @@
 		/**
 		 * クエリ結果に出現するようにタグ情報を登録する
 		 * @param $id 記事のキー
-		 * @param $postDate 投稿日時
-		 * @param $updateDate 更新日時
 		 * @param $tagList タグのリスト
 		 * @param $updateCache trueのときキャッシュを更新する
 		 */
-		public function set(int $id, string $postDate, string $updateDate, array $tagList, bool $updateCache = true) {
+		public function set(int $id, array $tagList, bool $updateCache = true) {
 			$pdo = $this->getPDO();
 			// タグ情報を挿入するステートメント
-			$insertPostedArticlesStmt = $pdo->prepare('INSERT INTO posted_articles(id, post_date, update_date) VALUES (:id, :post_date, :update_date)');
-			$updatePostedArticlesStmt = $pdo->prepare('UPDATE posted_articles SET post_date = :post_date, update_date = :update_date WHERE id = :id');
 			$insertTagsStmt = $pdo->prepare('INSERT INTO tags(id, org_name, norm_name) VALUES (:id, :org_name, :norm_name)');
 			$insertPostedArticlesTagsStmt = $pdo->prepare('INSERT INTO posted_articles_tags(article_id, tag_id) VALUES (:article_id, :tag_id)');
 			// タグを選択するステートメント
 			$selectTagsIdStmt = $pdo->prepare('SELECT id FROM tags WHERE norm_name = :norm_name');
 			$selectTagsListStmt = $pdo->prepare('SELECT t2.norm_name FROM posted_articles_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t1.article_id = :id');
-			// 記事を選択するステートメント
-			$selectArticleIdStmt = $pdo->prepare('SELECT id FROM posted_articles WHERE id = :id');
 
 			// 変更があったタグのリスト
 			$changeTagList = [];
@@ -1165,30 +1159,15 @@
 			$pdo->beginTransaction();
 			// 記事情報の登録
 			try {
-				$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_INT);
-				$selectArticleIdStmt->execute();
-				// 検索対象をInsertするかUpdateするかの選択
-				$insertPostedArticleFlag = $selectArticleIdStmt->rowCount() === 0;
-				$mergePostedArticleStmt = $insertPostedArticleFlag ? $insertPostedArticlesStmt : $updatePostedArticlesStmt;
-
 				// すでに登録済みのタグのリスト
-				$beforeTagList = [];
-				if (!$insertPostedArticleFlag) {
-					$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
-					$selectTagsListStmt->execute();
-					$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
-				}
+				$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$selectTagsListStmt->execute();
+				$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
 				// 新規に挿入するタグリストと削除するタグリスト
 				$normTagList = array_map(fn ($tag) => self::normToken($tag), $tagList);
 				$insertTagList = [...array_diff($normTagList, $beforeTagList)];
 				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
 				$changeTagList = [...$insertTagList, ...$deleteTagList];
-
-				// 検索対象の登録
-				$mergePostedArticleStmt->bindValue(':id', $id, \PDO::PARAM_INT);
-				$mergePostedArticleStmt->bindValue(':post_date', $postDate, \PDO::PARAM_STR);
-				$mergePostedArticleStmt->bindValue(':update_date', $updateDate, \PDO::PARAM_STR);
-				$mergePostedArticleStmt->execute();
 
 				// タグ情報の登録
 				$cnt = 0;
@@ -1262,10 +1241,6 @@
 			try {
 				// 記事とタグの関連付けの破棄
 				$stmt = $pdo->prepare('DELETE FROM posted_articles_tags WHERE article_id = :id');
-				$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
-				$stmt->execute();
-				// 記事情報の破棄
-				$stmt = $pdo->prepare('DELETE FROM posted_articles WHERE id = :id');
 				$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
 				$stmt->execute();
 				
