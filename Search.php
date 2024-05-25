@@ -1008,6 +1008,26 @@
 				throw $e;
 			}
 		}
+
+		/**
+		 * 全てのキャッシュの削除(この際あらゆる異常が発生したことによる不整合もまとめて削除される)
+		 */
+		public function deleteAll() {
+			$pdo = $this->getPDO();
+
+			// リネームしたキャッシュのフォルダを削除する
+			$cacheDatas = glob("{$this->base}/*");
+			if ($cacheDatas !== false) {
+				foreach ($cacheDatas as $cache) {
+					if (!$this->deleteSingleCacheFile($cache)) {
+						// ここでの失敗は次の契機など存在しないため例外を送信
+						throw new \Exception("{$cache}に関するキャッシュファイルの削除に失敗しました");
+					}
+				}
+			}
+
+			$pdo->exec('TRUNCATE TABLE tag_search_caches_tags');
+		}
 	}
 
 	/**
