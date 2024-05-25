@@ -1235,4 +1235,11 @@
 				}
 			}
 		}
+
+		/**
+		 * 全てのキャッシュの削除
+		 */
+		public function deleteAllCache() {
+			$this->cacheTable->deleteAll();
+		}
 	}
