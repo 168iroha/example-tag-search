@@ -976,6 +976,7 @@
 			}
 
 			$pdo->exec('TRUNCATE TABLE tag_search_caches_tags');
+			$pdo->exec('TRUNCATE TABLE tag_search_caches');
 		}
 	}
 
