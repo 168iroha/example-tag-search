@@ -864,7 +864,14 @@
 		private function renameToDelete(string $key, \DateTime $now) {
 			// リネーム先のフォルダ名の計算({$key}.{$datetime}の形式のフォルダ名にする)
 			$cacheBase = substr($this->getCachePath($key), 0, -1);
-			return rename($cacheBase, $cacheBase.'.'.$now->format('YmdHis'));
+			$deleteCacheBase = $cacheBase.'.'.$now->format('YmdHis');
+			if (rename($cacheBase, $deleteCacheBase)) {
+				// リネームに成功した場合はフォルダの削除も試みる
+				// 何かしらが原因で削除に失敗した場合は次以降の契機でdeleteCacheFile()により削除する
+				$this->deleteSingleCacheFile($deleteCacheBase);
+				return true;
+			}
+			return false;
 		}
 
 		/**
@@ -1010,6 +1017,60 @@
 		}
 
 		/**
+		 * キャッシュのキーを指定することによるキャッシュの削除
+		 * @param $key キャッシュの削除対象となるキー(ID)
+		 * @param $now 削除の基準となる日時
+		 */
+		public function deleteByKey(string $key, \DateTime $now = new \DateTime()) {
+			$pdo = $this->getPDO();
+			$updateTagSearchCachesStmt = $pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?');
+			$deleteTagSearchCachesStmt = $pdo->prepare('DELETE FROM tag_search_caches WHERE id = ?');
+			$deleteTagSearchCachesTagsStmt = $pdo->prepare('DELETE FROM tag_search_caches_tags WHERE cache_id = ?');
+
+			$pdo->beginTransaction();
+			try {
+				// 選択した対象をすべて削除
+				$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+		}
+
+		/**
+		 * 削除件数を指定することによるキャッシュの削除
+		 * @param $limit 削除を行う数
+		 * @param $offset 削除をしない数
+		 */
+		public function deleteByNumber(int $limit, int $offset, \DateTime $now = new \DateTime()) {
+			$pdo = $this->getPDO();
+			$updateTagSearchCachesStmt = $pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?');
+			$deleteTagSearchCachesStmt = $pdo->prepare('DELETE FROM tag_search_caches WHERE id = ?');
+			$deleteTagSearchCachesTagsStmt = $pdo->prepare('DELETE FROM tag_search_caches_tags WHERE cache_id = ?');
+
+			$pdo->beginTransaction();
+			try {
+				// 削除対象の候補を一時テーブルに積む(厳密ではないが有効期限が短い順に積む)
+				$pdo->prepare(sprintf('CREATE TEMPORARY TABLE delete_caches AS SELECT id FROM tag_search_caches ORDER BY expiration_time DESC LIMIT %d OFFSET %d', $limit, $offset))->execute();
+
+				// 選択した対象をすべて削除
+				$stmt = $pdo->query('SELECT * FROM delete_caches');
+				while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+					$key = $row['id'];
+					$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
+				}
+				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+		}
+
+		/**
 		 * 全てのキャッシュの削除(この際あらゆる異常が発生したことによる不整合もまとめて削除される)
 		 */
 		public function deleteAll() {
@@ -1027,6 +1088,7 @@
 			}
 
 			$pdo->exec('TRUNCATE TABLE tag_search_caches_tags');
+			$pdo->exec('TRUNCATE TABLE tag_search_caches');
 		}
 	}
 
@@ -1036,6 +1098,9 @@
 	class Query {
 		/** クエリで取得する最大件数 */
 		const MAX_SHOW_COUNT = 10;
+		/** クエリをキャッシュする最大数(ページングなどは考慮しない) */
+		const MAX_CACHE_QUERY_COUNT = 500;
+
 		/** クエリを構築するためのオブジェクト */
 		private \TagSearchCaches $cacheTable;
 		/** PDOを返すオブジェクト */
@@ -1047,7 +1112,7 @@
 		 * トークンを正規化する
 		 */
 		public static function normToken(string $token) {
-			return mb_strtoupper(normalizer_normalize(trim($token), Normalizer::FORM_KC));
+			return mb_strtoupper(normalizer_normalize(trim($token), \Normalizer::FORM_KC));
 		}
 
 		public function __construct(\TagSearchCaches $cacheTable, \Closure $callback) {
@@ -1060,12 +1125,49 @@
 		}
 
 		/**
+		 * キャッシュのキーの取得
+		 * @param $query キャッシュのキー
+		 */
+		private function getCacheKey(string $query) {
+			return hash('sha256', $query);
+		}
+
+		/**
+		 * タグ名のリストによるキャッシュの削除
+		 * @param $tagList 正規化されたタグ名のリスト
+		 */
+		private function deleteByTagList(array $tagList) {
+			// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
+			foreach ($tagList as $tag) {
+				try {
+					$this->cacheTable->deleteByTag($tag);
+				}
+				catch (\Exception $e) {
+					// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+					// 本来はログなどでイベントの管理はした方がいい
+				}
+			}
+			try {
+				// 空のクエリの削除
+				$this->cacheTable->deleteByKey($this->getCacheKey(''));
+			}
+			catch (\Exception $e) {
+				// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+				// 本来はログなどでイベントの管理はした方がいい
+			}
+		}
+
+		/**
 		 * 検索結果をもとに初期状態の有効期限の取得
 		 */
 		private function getExpiration(array $idList, int $count, array $bindVal): int|\DateTime {
-			if (count($bindVal) === 0 || (count($bindVal) === 1 && $count > 0)) {
-				// クエリが空もしくは単一タグかつ検索結果が存在するときは有効期限を事実上の無期限にする
+			if (count($bindVal) === 0) {
+				// クエリが空のときは有効期限を事実上の無期限にする
 				return new \DateTime('9999-01-01 00:00:00');
+			}
+			if (count($bindVal) === 1 && $count > 0) {
+				// クエリが単一タグかつ検索結果が存在するときは有効期限を365日にする
+				return 365 * 24 * 60;
 			}
 			if ($count === 0) {
 				// 検索結果が存在しないときは有効期限を15分とする
@@ -1086,7 +1188,7 @@
 			$count = null;
 			$idList = null;
 			// 正規化したクエリからキャッシュのキーを計算
-			$key = hash('sha256', $builder->query());
+			$key = $this->getCacheKey($builder->query());
 			$prefix = "{$order}.";
 
 			if ($this->cacheTable->has($key)) {
@@ -1122,6 +1224,9 @@
 
 			if (!$this->cacheTable->has($key)) {
 				try {
+					// キャッシュが増大しすぎないように削除する
+					// キャッシュ生成毎に削除をしているため削除件数は1件で十分
+					$this->cacheTable->deleteByNumber(1, self::MAX_CACHE_QUERY_COUNT - 1);
 					// 検索結果をもとに有効期限を定義
 					// キャッシュが存在しないときは新規作成
 					$this->cacheTable->create(
@@ -1230,16 +1335,7 @@
 
 			if ($updateCache) {
 				// 変更に係るタグに関連するキャッシュの削除
-				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
-				foreach ($changeTagList as $tag) {
-					try {
-						$this->cacheTable->deleteByTag($tag);
-					}
-					catch (\Exception $e) {
-						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
-						// 本来はログなどでイベントの管理はした方がいい
-					}
-				}
+				$this->deleteByTagList($changeTagList);
 			}
 		}
 
@@ -1274,16 +1370,7 @@
 			// 削除の場合はキャッシュの更新を強制する
 			{
 				// 変更に係るタグに関連するキャッシュの削除
-				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
-				foreach ($deleteTagList as $tag) {
-					try {
-						$this->cacheTable->deleteByTag($tag);
-					}
-					catch (\Exception $e) {
-						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
-						// 本来はログなどでイベントの管理はした方がいい
-					}
-				}
+				$this->deleteByTagList($deleteTagList);
 			}
 		}
 
