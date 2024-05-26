@@ -989,6 +989,37 @@
 		}
 
 		/**
+		 * 削除件数を指定することによるキャッシュの削除
+		 * @param $limit 削除を行う数
+		 * @param $offset 削除をしない数
+		 */
+		public function deleteByNumber(int $limit, int $offset, \DateTime $now = new \DateTime()) {
+			$pdo = $this->getPDO();
+			$updateTagSearchCachesStmt = $pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?');
+			$deleteTagSearchCachesStmt = $pdo->prepare('DELETE FROM tag_search_caches WHERE id = ?');
+			$deleteTagSearchCachesTagsStmt = $pdo->prepare('DELETE FROM tag_search_caches_tags WHERE cache_id = ?');
+
+			$pdo->beginTransaction();
+			try {
+				// 削除対象の候補を一時テーブルに積む(厳密ではないが有効期限が短い順に積む)
+				$pdo->prepare(sprintf('CREATE TEMPORARY TABLE delete_caches AS SELECT id FROM tag_search_caches ORDER BY expiration_time DESC LIMIT %d OFFSET %d', $limit, $offset))->execute();
+
+				// 選択した対象をすべて削除
+				$stmt = $pdo->query('SELECT * FROM delete_caches');
+				while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+					$key = $row['id'];
+					$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
+				}
+				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+		}
+
+		/**
 		 * 全てのキャッシュの削除(この際あらゆる異常が発生したことによる不整合もまとめて削除される)
 		 */
 		public function deleteAll() {
@@ -1016,6 +1047,9 @@
 	class Query {
 		/** クエリで取得する最大件数 */
 		const MAX_SHOW_COUNT = 10;
+		/** クエリをキャッシュする最大数(ページングなどは考慮しない) */
+		const MAX_CACHE_QUERY_COUNT = 500;
+
 		/** クエリを構築するためのオブジェクト */
 		private \TagSearchCaches $cacheTable;
 		/** PDOを返すオブジェクト */
@@ -1139,6 +1173,9 @@
 
 			if (!$this->cacheTable->has($key)) {
 				try {
+					// キャッシュが増大しすぎないように削除する
+					// キャッシュ生成毎に削除をしているため削除件数は1件で十分
+					$this->cacheTable->deleteByNumber(1, self::MAX_CACHE_QUERY_COUNT - 1);
 					// 検索結果をもとに有効期限を定義
 					// キャッシュが存在しないときは新規作成
 					$this->cacheTable->create(
