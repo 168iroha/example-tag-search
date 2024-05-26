@@ -959,6 +959,29 @@
 		}
 
 		/**
+		 * キャッシュのキーを指定することによるキャッシュの削除
+		 * @param $key キャッシュの削除対象となるキー(ID)
+		 * @param $now 削除の基準となる日時
+		 */
+		public function deleteByKey(string $key, \DateTime $now = new \DateTime()) {
+			$pdo = $this->getPDO();
+			$updateTagSearchCachesStmt = $pdo->prepare('UPDATE tag_search_caches SET expiration_time = ? WHERE id = ?');
+			$deleteTagSearchCachesStmt = $pdo->prepare('DELETE FROM tag_search_caches WHERE id = ?');
+			$deleteTagSearchCachesTagsStmt = $pdo->prepare('DELETE FROM tag_search_caches_tags WHERE cache_id = ?');
+
+			$pdo->beginTransaction();
+			try {
+				// 選択した対象をすべて削除
+				$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
+				$pdo->commit();
+			}
+			catch (\PDOException $e) {
+				$pdo->rollBack();
+				throw $e;
+			}
+		}
+
+		/**
 		 * 全てのキャッシュの削除(この際あらゆる異常が発生したことによる不整合もまとめて削除される)
 		 */
 		public function deleteAll() {
@@ -997,7 +1020,7 @@
 		 * トークンを正規化する
 		 */
 		public static function normToken(string $token) {
-			return mb_strtoupper(normalizer_normalize(trim($token), Normalizer::FORM_KC));
+			return mb_strtoupper(normalizer_normalize(trim($token), \Normalizer::FORM_KC));
 		}
 
 		public function __construct(\TagSearchCaches $cacheTable, \Closure $callback) {
@@ -1007,6 +1030,39 @@
 
 		public function getPDO(): \PDO {
 			return $this->pdo = $this->pdo ?? ($this->callback)();
+		}
+
+		/**
+		 * キャッシュのキーの取得
+		 * @param $query キャッシュのキー
+		 */
+		private function getCacheKey(string $query) {
+			return hash('sha256', $query);
+		}
+
+		/**
+		 * タグ名のリストによるキャッシュの削除
+		 * @param $tagList 正規化されたタグ名のリスト
+		 */
+		private function deleteByTagList(array $tagList) {
+			// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
+			foreach ($tagList as $tag) {
+				try {
+					$this->cacheTable->deleteByTag($tag);
+				}
+				catch (\Exception $e) {
+					// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+					// 本来はログなどでイベントの管理はした方がいい
+				}
+			}
+			try {
+				// 空のクエリの削除
+				$this->cacheTable->deleteByKey($this->getCacheKey(''));
+			}
+			catch (\Exception $e) {
+				// キャッシュ更新時の異常は外部から対処不要のため揉み消す
+				// 本来はログなどでイベントの管理はした方がいい
+			}
 		}
 
 		/**
@@ -1036,7 +1092,7 @@
 			$count = null;
 			$idList = null;
 			// 正規化したクエリからキャッシュのキーを計算
-			$key = hash('sha256', $builder->query());
+			$key = $this->getCacheKey($builder->query());
 			$prefix = "{$order}.";
 
 			if ($this->cacheTable->has($key)) {
@@ -1180,16 +1236,7 @@
 
 			if ($updateCache) {
 				// 変更に係るタグに関連するキャッシュの削除
-				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
-				foreach ($changeTagList as $tag) {
-					try {
-						$this->cacheTable->deleteByTag($tag);
-					}
-					catch (\Exception $e) {
-						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
-						// 本来はログなどでイベントの管理はした方がいい
-					}
-				}
+				$this->deleteByTagList($changeTagList);
 			}
 		}
 
@@ -1224,16 +1271,7 @@
 			// 削除の場合はキャッシュの更新を強制する
 			{
 				// 変更に係るタグに関連するキャッシュの削除
-				// 本来ならば状態に応じて部分的な更新をするような最適化が実施されるべき
-				foreach ($deleteTagList as $tag) {
-					try {
-						$this->cacheTable->deleteByTag($tag);
-					}
-					catch (\Exception $e) {
-						// キャッシュ更新時の異常は外部から対処不要のため揉み消す
-						// 本来はログなどでイベントの管理はした方がいい
-					}
-				}
+				$this->deleteByTagList($deleteTagList);
 			}
 		}
 
