@@ -813,7 +813,14 @@
 		private function renameToDelete(string $key, \DateTime $now) {
 			// リネーム先のフォルダ名の計算({$key}.{$datetime}の形式のフォルダ名にする)
 			$cacheBase = substr($this->getCachePath($key), 0, -1);
-			return rename($cacheBase, $cacheBase.'.'.$now->format('YmdHis'));
+			$deleteCacheBase = $cacheBase.'.'.$now->format('YmdHis');
+			if (rename($cacheBase, $deleteCacheBase)) {
+				// リネームに成功した場合はフォルダの削除も試みる
+				// 何かしらが原因で削除に失敗した場合は次以降の契機でdeleteCacheFile()により削除する
+				$this->deleteSingleCacheFile($deleteCacheBase);
+				return true;
+			}
+			return false;
 		}
 
 		/**
