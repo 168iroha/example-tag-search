@@ -1076,9 +1076,13 @@
 		 * 検索結果をもとに初期状態の有効期限の取得
 		 */
 		private function getExpiration(array $idList, int $count, array $bindVal): int|\DateTime {
-			if (count($bindVal) === 0 || (count($bindVal) === 1 && $count > 0)) {
-				// クエリが空もしくは単一タグかつ検索結果が存在するときは有効期限を事実上の無期限にする
+			if (count($bindVal) === 0) {
+				// クエリが空のときは有効期限を事実上の無期限にする
 				return new \DateTime('9999-01-01 00:00:00');
+			}
+			if (count($bindVal) === 1 && $count > 0) {
+				// クエリが単一タグかつ検索結果が存在するときは有効期限を365日にする
+				return 365 * 24 * 60;
 			}
 			if ($count === 0) {
 				// 検索結果が存在しないときは有効期限を15分とする
