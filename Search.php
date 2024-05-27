@@ -1036,8 +1036,8 @@
 				}
 			}
 
-			$pdo->exec('TRUNCATE TABLE tag_search_caches_tags');
-			$pdo->exec('TRUNCATE TABLE tag_search_caches');
+			$pdo->exec('DELETE FROM tag_search_caches_tags');
+			$pdo->exec('DELETE FROM tag_search_caches');
 		}
 	}
 
