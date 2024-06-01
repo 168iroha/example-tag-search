@@ -104,11 +104,11 @@
 			if ($a->level !== $b->level) {
 				return $b->level - $a->level;
 			}
-			// 同じlevelならsqlOpの昇順にする
-			if ($a->sqlOp !== $b->sqlOp) {
-				return $a->sqlOp <=> $b->sqlOp;
+			// 同じlevelならqueryOpの昇順にする
+			if ($a->queryOp !== $b->queryOp) {
+				return $a->queryOp <=> $b->queryOp;
 			}
-			// 同じlevelかつ同じsqlOpなら項数について降順にする
+			// 同じlevelかつ同じqueryOpなら項数について降順にする
 			if ($a->children !== $b->children) {
 				return count($b->children) - count($a->children);
 			}
