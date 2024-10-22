@@ -1,6 +1,6 @@
 <?php
 	declare(strict_types=1);
-	require_once 'Search.php';
+	require_once 'TagSearch.php';
 
 	/**
 	 * PDOを取得する
@@ -94,8 +94,7 @@
 	$execQuery = false;
 
 	$config = 'db.config.json';
-	$cacheTable = new TagSearchCaches('cache', function () use($config, &$execQuery) { return getPDO($config, $execQuery); });
-	$query = new Query($cacheTable, fn () => $cacheTable->getPDO());
+	$callback = function () use($config, &$execQuery) { return getPDO($config, $execQuery); };
 	$idList = [];
 	$count = 0;
 
@@ -104,8 +103,7 @@
 		switch ($_SERVER['REQUEST_METHOD']) {
 			case 'GET':
 				// キャッシュを利用した検索結果の取得
-				$builder = new BuildQueryOfTagSearch($_GET['str'] ?? '');
-				['id-list' => $idList, 'count' => $count] = $query->get($builder, max((int)($_GET['page'] ?? 1), 1), BuildQueryOfTagSearch::DESC_POSTDATE);
+				['id-list' => $idList, 'count' => $count] = \TagSearch::getResult($_GET['str'] ?? '', max((int)($_GET['page'] ?? 1), 1), \TagSearch::DESC_POSTDATE, $callback);
 				break;
 			case 'POST':
 				switch ($_POST['command']) {
@@ -114,26 +112,31 @@
 						$postDate = (new \DateTime($_POST['id']))->format('YmdHi');
 						$id = (int)$postDate;
 						$tagList = explode(',', $_POST['tag-list']);
+						$query = \TagSearch::getQuery($callback);
 						setArticle($query->getPDO(), $id, $postDate, (new \DateTime())->format('YmdHi'));
 						$query->set($id, $tagList);
 						break;
 					case 'delete-article':
 						// 記事の削除
 						$id = (int)((new \DateTime($_POST['id']))->format('YmdHi'));
+						$query = \TagSearch::getQuery($callback);
 						$query->delete($id);
 						deleteArticle($query->getPDO(), $id);
 						break;
 					case 'delete-tag':
 						// タグによるキャッシュの削除
-						$cacheTable->deleteByTag(BuildQueryOfTagSearch::normToken($_POST['str']));
+						$query = \TagSearch::getQuery($callback);
+						$query->getCacheTable()->deleteByTag(\Query::normToken($_POST['str']));
 						break;
 					case 'delete-datetime':
 						// 日時によるによるキャッシュの削除
-						$cacheTable->deleteByDatetime(new DateTime($_POST['datetime']));
+						$query = \TagSearch::getQuery($callback);
+						$query->getCacheTable()->deleteByDatetime(new DateTime($_POST['datetime']));
 						break;
 					case 'delete-file':
 						// キャッシュしたファイルの削除
-						$cacheTable->deleteCacheFile();
+						$query = \TagSearch::getQuery($callback);
+						$query->getCacheTable()->deleteCacheFile();
 						break;
 					}
 				break;

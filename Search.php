@@ -1112,7 +1112,7 @@
 		 * トークンを正規化する
 		 */
 		public static function normToken(string $token) {
-			return mb_strtoupper(normalizer_normalize(trim($token), \Normalizer::FORM_KC));
+			return \BuildQueryOfTagSearch::normToken($token);
 		}
 
 		public function __construct(\TagSearchCaches $cacheTable, \Closure $callback) {
@@ -1121,7 +1121,11 @@
 		}
 
 		public function getPDO(): \PDO {
-			return $this->pdo = $this->pdo ?? ($this->callback)();
+			return $this->pdo ?? ($this->callback)();
+		}
+
+		public function getCacheTable(): \TagSearchCaches {
+			return $this->cacheTable;
 		}
 
 		/**
