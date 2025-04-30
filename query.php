@@ -40,7 +40,7 @@
 	 * @param $postDate 投稿日時
 	 * @param $updateDate 更新日時
 	 */
-	function setArticle(\PDO $pdo, int $id, string $postDate, string $updateDate) {
+	function setArticle(\PDO $pdo, string $id, string $postDate, string $updateDate) {
 		// 記事を挿入するステートメント
 		$insertPostedArticlesStmt = $pdo->prepare('INSERT INTO posted_articles(id, post_date, update_date) VALUES (:id, :post_date, :update_date)');
 		$updatePostedArticlesStmt = $pdo->prepare('UPDATE posted_articles SET post_date = :post_date, update_date = :update_date WHERE id = :id');
@@ -49,14 +49,14 @@
 
 		$pdo->beginTransaction();
 		try {
-			$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_STR);
 			$selectArticleIdStmt->execute();
 			// 記事をInsertするかUpdateするかの選択
 			$insertPostedArticleFlag = $selectArticleIdStmt->rowCount() === 0;
 			$mergePostedArticleStmt = $insertPostedArticleFlag ? $insertPostedArticlesStmt : $updatePostedArticlesStmt;
 
 			// 記事の登録
-			$mergePostedArticleStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$mergePostedArticleStmt->bindValue(':id', $id, \PDO::PARAM_STR);
 			$mergePostedArticleStmt->bindValue(':post_date', $postDate, \PDO::PARAM_STR);
 			$mergePostedArticleStmt->bindValue(':update_date', $updateDate, \PDO::PARAM_STR);
 			$mergePostedArticleStmt->execute();
@@ -74,12 +74,12 @@
 	 * @param $pdo PDO
 	 * @param $id 記事のキー
 	 */
-	function deleteArticle(\PDO $pdo, int $id) {
+	function deleteArticle(\PDO $pdo, string $id) {
 		$pdo->beginTransaction();
 		try {
 			// 記事情報の破棄
 			$stmt = $pdo->prepare('DELETE FROM posted_articles WHERE id = :id');
-			$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$stmt->bindValue(':id', $id, \PDO::PARAM_STR);
 			$stmt->execute();
 			
 			$pdo->commit();
@@ -110,7 +110,7 @@
 					case 'insert-article':
 						// 記事の追加
 						$postDate = (new \DateTime($_POST['id']))->format('YmdHi');
-						$id = (int)$postDate;
+						$id = $postDate;
 						$tagList = explode(',', $_POST['tag-list']);
 						$query = \TagSearch::getQuery($callback);
 						setArticle($query->getPDO(), $id, $postDate, (new \DateTime())->format('YmdHi'));
@@ -118,7 +118,7 @@
 						break;
 					case 'delete-article':
 						// 記事の削除
-						$id = (int)((new \DateTime($_POST['id']))->format('YmdHi'));
+						$id = (new \DateTime($_POST['id']))->format('YmdHi');
 						$query = \TagSearch::getQuery($callback);
 						$query->delete($id);
 						deleteArticle($query->getPDO(), $id);
