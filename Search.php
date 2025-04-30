@@ -334,7 +334,7 @@
 		/** @var int 更新日時の降順 */
 		const DESC_UPDATEDATE = 3;
 		/** @var array<int, string> SQLの並べ替え部の生成 */
-		private const ORDER_MAP = [
+		const ORDER_MAP = [
 			self::ASC_POSTDATE => 'ORDER BY posted_articles.id ASC',
 			self::ASC_UPDATEDATE => 'ORDER BY posted_articles.update_date ASC',
 			self::DESC_POSTDATE => 'ORDER BY posted_articles.id DESC',
@@ -1273,7 +1273,7 @@
 		 * @param $tagList タグのリスト
 		 * @param $updateCache trueのときキャッシュを更新する
 		 */
-		public function set(int $id, array $tagList, bool $updateCache = true) {
+		public function set(string $id, array $tagList, bool $updateCache = true) {
 			$pdo = $this->getPDO();
 			// タグ情報を挿入するステートメント
 			$insertTagsStmt = $pdo->prepare('INSERT INTO tags(id, org_name, norm_name) VALUES (:id, :org_name, :norm_name)');
@@ -1289,7 +1289,7 @@
 			// 記事情報の登録
 			try {
 				// すでに登録済みのタグのリスト
-				$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_STR);
 				$selectTagsListStmt->execute();
 				$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
 				// 新規に挿入するタグリストと削除するタグリスト
@@ -1297,7 +1297,7 @@
 				$insertTagList = [...array_diff($normTagList, $beforeTagList)];
 				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
 				$changeTagList = [...$insertTagList, ...$deleteTagList];
-
+				
 				// タグ情報の登録
 				$cnt = 0;
 				foreach ($insertTagList as $tag) {
@@ -1305,25 +1305,25 @@
 					$selectTagsIdStmt->execute();
 					// tag_idの取得
 					if ($selectTagsIdStmt->rowCount() === 0) {
-						$tagId = $id * 100 + (++$cnt);
+						$tagId = $id.sprintf('%02d', ++$cnt);
 						// tagsへの挿入
-						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_INT);
+						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_STR);
 						$insertTagsStmt->bindValue(':org_name', trim($tag), \PDO::PARAM_STR);
 						$insertTagsStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 						$insertTagsStmt->execute();
 					}
 					else {
-						$tagId = (int)$selectTagsIdStmt->fetch()['id'];
+						$tagId = $selectTagsIdStmt->fetch()['id'];
 					}
 					// posted_articles_tagsへの挿入
-					$insertPostedArticlesTagsStmt->bindValue(':article_id', $id, \PDO::PARAM_INT);
-					$insertPostedArticlesTagsStmt->bindValue(':tag_id', $tagId, \PDO::PARAM_INT);
+					$insertPostedArticlesTagsStmt->bindValue(':article_id', $id, \PDO::PARAM_STR);
+					$insertPostedArticlesTagsStmt->bindValue(':tag_id', $tagId, \PDO::PARAM_STR);
 					$insertPostedArticlesTagsStmt->execute();
 				}
 				// タグ情報の削除
 				if (count($deleteTagList) > 0) {
 					$stmt = $pdo->prepare('DELETE FROM posted_articles_tags WHERE article_id = ? AND tag_id IN (SELECT id FROM tags WHERE norm_name IN ('.implode(',', array_fill(0, count($deleteTagList), '?')).'))');
-					$stmt->bindValue(1, $id, \PDO::PARAM_INT);
+					$stmt->bindValue(1, $id, \PDO::PARAM_STR);
 					for ($i = 0; $i < count($deleteTagList); ++$i) {
 						$stmt->bindValue(2 + $i, $deleteTagList[$i], \PDO::PARAM_STR);
 					}
@@ -1347,13 +1347,13 @@
 		 * 検索情報を削除する
 		 * @param $id 記事のキー
 		 */
-		public function delete(int $id) {
+		public function delete(string $id) {
 			$pdo = $this->getPDO();
 			$pdo->beginTransaction();
 
 			// 削除対象のタグの取得
 			$selectTagsListStmt = $pdo->prepare('SELECT t2.norm_name FROM posted_articles_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t1.article_id = :id');
-			$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_INT);
+			$selectTagsListStmt->bindValue(':id', $id, \PDO::PARAM_STR);
 			$selectTagsListStmt->execute();
 			$deleteTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
 
@@ -1361,7 +1361,7 @@
 			try {
 				// 記事とタグの関連付けの破棄
 				$stmt = $pdo->prepare('DELETE FROM posted_articles_tags WHERE article_id = :id');
-				$stmt->bindValue(':id', $id, \PDO::PARAM_INT);
+				$stmt->bindValue(':id', $id, \PDO::PARAM_STR);
 				$stmt->execute();
 				
 				$pdo->commit();
