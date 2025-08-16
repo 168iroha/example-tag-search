@@ -7,23 +7,24 @@
 	 */
 	class TagSearch {
 		/** @var int 投稿日時の昇順 */
-		const ASC_POSTDATE = 0;
+		public const ASC_POSTDATE = 0;
 		/** @var int 更新日時の昇順 */
-		const ASC_UPDATEDATE = 1;
+		public const ASC_UPDATEDATE = 1;
 		/** @var int 投稿日時の降順 */
-		const DESC_POSTDATE = 2;
+		public const DESC_POSTDATE = 2;
 		/** @var int 更新日時の降順 */
-		const DESC_UPDATEDATE = 3;
+		public const DESC_UPDATEDATE = 3;
 
 		/** 検索に用いることができるタグの数 */
-		const LIMIT_TAGS = 3;
+		public const LIMIT_TAGS = 3;
 
 		/**
 		 * クエリの発行のためのオブジェクトの取得
+		 * @param $cache キャッシュの出力先
 		 * @param $callback PDOを返すオブジェクト
 		 */
-		public static function getQuery(\Closure $callback) {
-			$cacheTable = new \TagSearchCaches(__DIR__.'/cache', $callback);
+		public static function getQuery(string $cache, \Closure $callback) {
+			$cacheTable = new \TagSearchCaches($cache, $callback);
 			$query = new \Query($cacheTable, $callback);
 			return $query;
 		}
@@ -33,14 +34,15 @@
 		 * @param $queryText クエリを示す文字列
 		 * @param $page ページ(オフセットは1)
 		 * @param $order 並べ替え
+		 * @param $cache キャッシュの出力先
 		 * @param $callback PDOを返すオブジェクト
 		 * @throws \PDOException DBからの検索結果の取得に失敗した際に送信される
 		 */
-		public static function getResult(string $queryText, int $page, int $order, \Closure $callback) {
+		public static function getResult(string $queryText, int $page, int $order, string $cache, \Closure $callback) {
 			if ($page < 1) {
 				throw new \LogicException('ページ番号は1以上でなければいけません');
 			}
-			$query = self::getQuery($callback);
+			$query = self::getQuery($cache, $callback);
 			$builder = new \BuildQueryOfTagSearch($queryText, self::LIMIT_TAGS);
 			return $query->get($builder, $page, $order);
 		}
