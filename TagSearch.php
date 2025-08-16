@@ -7,16 +7,16 @@
 	 */
 	class TagSearch {
 		/** @var int 投稿日時の昇順 */
-		const ASC_POSTDATE = 0;
+		public const ASC_POSTDATE = 0;
 		/** @var int 更新日時の昇順 */
-		const ASC_UPDATEDATE = 1;
+		public const ASC_UPDATEDATE = 1;
 		/** @var int 投稿日時の降順 */
-		const DESC_POSTDATE = 2;
+		public const DESC_POSTDATE = 2;
 		/** @var int 更新日時の降順 */
-		const DESC_UPDATEDATE = 3;
+		public const DESC_UPDATEDATE = 3;
 
 		/** 検索に用いることができるタグの数 */
-		const LIMIT_TAGS = 3;
+		public const LIMIT_TAGS = 3;
 
 		/**
 		 * クエリの発行のためのオブジェクトの取得

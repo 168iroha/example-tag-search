@@ -277,15 +277,15 @@
 	 */
 	class BuildQueryOfTagSearch {
 		/** @var int 投稿日時の昇順 */
-		const ASC_POSTDATE = 0;
+		public const ASC_POSTDATE = 0;
 		/** @var int 更新日時の昇順 */
-		const ASC_UPDATEDATE = 1;
+		public const ASC_UPDATEDATE = 1;
 		/** @var int 投稿日時の降順 */
-		const DESC_POSTDATE = 2;
+		public const DESC_POSTDATE = 2;
 		/** @var int 更新日時の降順 */
-		const DESC_UPDATEDATE = 3;
+		public const DESC_UPDATEDATE = 3;
 		/** @var array<int, string> SQLの並べ替え部の生成 */
-		const ORDER_MAP = [
+		private const ORDER_MAP = [
 			self::ASC_POSTDATE => 'ORDER BY posted_articles.id ASC',
 			self::ASC_UPDATEDATE => 'ORDER BY posted_articles.update_date ASC',
 			self::DESC_POSTDATE => 'ORDER BY posted_articles.id DESC',
@@ -537,9 +537,9 @@
 	 */
 	class TagSearchCaches {
 		/** キャッシュの有効期限を記録するファイル(更新系) */
-		const EXPIRATION_NAME = 'expiration.json';
+		private const EXPIRATION_NAME = 'expiration.json';
 		/** キャッシュへ設定を記載するファイル(参照系) */
-		const CONFIG_NAEM = 'config.json';
+		private const CONFIG_NAEM = 'config.json';
 
 		/** キャッシュを管理するベースディレクトリ */
 		private string $base;
@@ -1046,9 +1046,9 @@
 	 */
 	class Query {
 		/** クエリで取得する最大件数 */
-		const MAX_SHOW_COUNT = 10;
+		public const MAX_SHOW_COUNT = 10;
 		/** クエリをキャッシュする最大数(ページングなどは考慮しない) */
-		const MAX_CACHE_QUERY_COUNT = 500;
+		public const MAX_CACHE_QUERY_COUNT = 500;
 
 		/** クエリを構築するためのオブジェクト */
 		private \TagSearchCaches $cacheTable;
