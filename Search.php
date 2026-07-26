@@ -827,6 +827,11 @@
 		private function renameToDelete(string $key, \DateTime $now) {
 			// リネーム先のフォルダ名の計算({$key}.{$datetime}の形式のフォルダ名にする)
 			$cacheBase = substr($this->getCachePath($key), 0, -1);
+			if (!is_dir($cacheBase)) {
+				// キャッシュのフォルダが存在しないときは削除済みとして扱う
+				// (存在しないパスに対するrename()の警告を避けるとともにDB上の残骸を確実に削除する)
+				return true;
+			}
 			$deleteCacheBase = $cacheBase.'.'.$now->format('YmdHis');
 			if (rename($cacheBase, $deleteCacheBase)) {
 				// リネームに成功した場合はフォルダの削除も試みる
