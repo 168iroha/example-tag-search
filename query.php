@@ -52,7 +52,8 @@
 			$selectArticleIdStmt->bindValue(':id', $id, \PDO::PARAM_STR);
 			$selectArticleIdStmt->execute();
 			// 記事をInsertするかUpdateするかの選択
-			$insertPostedArticleFlag = $selectArticleIdStmt->rowCount() === 0;
+			$insertPostedArticleFlag = $selectArticleIdStmt->fetchColumn() === false;
+			$selectArticleIdStmt->closeCursor();
 			$mergePostedArticleStmt = $insertPostedArticleFlag ? $insertPostedArticlesStmt : $updatePostedArticlesStmt;
 
 			// 記事の登録
