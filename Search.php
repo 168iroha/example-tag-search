@@ -144,29 +144,41 @@
 			if ($fixfirst) {
 				// 先頭要素のみ並べ替えないときはあらかじめ除外してからソートする
 				$first = array_shift($unsortChildren);
-				uasort($unsortChildren, 'self::order');
+				uasort($unsortChildren, self::order(...));
 				$this->children[] = $first;
 				array_push($this->children, ...$unsortChildren);
 			}
 			else {
-				uasort($unsortChildren, 'self::order');
+				uasort($unsortChildren, self::order(...));
 				array_push($this->children, ...$unsortChildren);
 			}
+		}
+
+		/**
+		 * 複合SELECTを二項演算の項として用いる際に包む導出テーブル
+		 * 
+		 * (SELECT ...)INTERSECT(SELECT ...)のように項を括弧で囲む記法が通るRDBMSと通らなくRDBMSが存在するための対応
+		 */
+		private const SQL_PART_GROUP = 'SELECT article_id FROM (%s) AS grouped_result';
+
+		/**
+		 * 子要素を二項演算の項として利用可能なSQLへ変換する
+		 */
+		private function operandSql(QueryTree $child): string {
+			$sql = $child->sql();
+			// 子が複合SELECTを生成するときのみ導出テーブルで包んで結合の優先順位を確定させる
+			$isCompound = $child instanceof BinaryTree || ($child instanceof ParenTree && $child->child instanceof BinaryTree);
+			return $isCompound ? sprintf(self::SQL_PART_GROUP, $sql) : $sql;
 		}
 
 		/**
 		 * 検索結果を取得するSQLの取得
 		 */
 		public function sql(): string {
-			$result = $this->children[0]->sql();
-			if (count($this->children) > 0) {
-				$result = "({$result})";
-
-				// 各クエリを$queryOpで連結
-				for ($i = 1; $i < count($this->children); ++$i) {
-					$sql = $this->children[$i]->sql();
-					$result .= "{$this->sqlOp}({$sql})";
-				}
+			$result = $this->operandSql($this->children[0]);
+			// 各クエリを$sqlOpで連結
+			for ($i = 1; $i < count($this->children); ++$i) {
+				$result .= " {$this->sqlOp} ".$this->operandSql($this->children[$i]);
 			}
 			return $result;
 		}
@@ -769,7 +781,9 @@
 			try {
 				$stmt = $pdo->prepare('SELECT id FROM tag_search_caches WHERE id = ?');
 				$stmt->execute([$key]);
-				if ($stmt->rowCount() === 0) {
+				$exists = $stmt->fetchColumn() !== false;
+				$stmt->closeCursor();
+				if (!$exists) {
 					// DBにキャッシュデータを登録
 					$pdo->prepare('INSERT INTO tag_search_caches(id, expiration_time) VALUES (?, ?)')->execute([$key, $expiration]);
 					if (count($tagList) > 0) {
@@ -865,6 +879,21 @@
 		}
 
 		/**
+		 * 削除対象となるキャッシュのキーの取得(反復の途中でtag_search_caches系のレコードを削除するためカーソルを開いたまま更新系を実行しないようあらかじめすべて読み切る)
+		 * @param $pdo PDO
+		 * @param $sql 削除対象を選択するSQL
+		 * @param $params バインド変数
+		 * @return array<string>
+		 */
+		private function selectDeleteTargets(\PDO $pdo, string $sql, array $params = []): array {
+			$stmt = $pdo->prepare($sql);
+			$stmt->execute($params);
+			$keyList = $stmt->fetchAll(\PDO::FETCH_COLUMN);
+			$stmt->closeCursor();
+			return $keyList;
+		}
+
+		/**
 		 * トランザクション中で実施されるキャッシュの削除
 		 * @param $key キャッシュのキー
 		 * @param $now 削除の基準となる日時
@@ -899,16 +928,13 @@
 
 			$pdo->beginTransaction();
 			try {
-				// 削除対象の候補を一時テーブルに積む
-				$pdo->prepare('CREATE TEMPORARY TABLE delete_caches AS SELECT DISTINCT t1.cache_id AS id FROM tag_search_caches_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t2.norm_name = ?')->execute([$tag]);
+				// 削除対象の候補の取得
+				$keyList = $this->selectDeleteTargets($pdo, 'SELECT DISTINCT t1.cache_id AS id FROM tag_search_caches_tags AS t1 JOIN tags AS t2 ON t1.tag_id = t2.id WHERE t2.norm_name = ?', [$tag]);
 
 				// 選択した対象をすべて削除
-				$stmt = $pdo->query('SELECT * FROM delete_caches');
-				while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-					$key = $row['id'];
+				foreach ($keyList as $key) {
 					$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
 				}
-				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
 				$pdo->commit();
 			}
 			catch (\PDOException $e) {
@@ -929,13 +955,11 @@
 
 			$pdo->beginTransaction();
 			try {
-				// 削除対象の候補を一時テーブルに積む
-				$pdo->prepare('CREATE TEMPORARY TABLE delete_caches AS SELECT id FROM tag_search_caches WHERE expiration_time <= ?')->execute([$now->format('Y-m-d H:i:s')]);
+				// 削除対象の候補の取得
+				$keyList = $this->selectDeleteTargets($pdo, 'SELECT id FROM tag_search_caches WHERE expiration_time <= ?', [$now->format('Y-m-d H:i:s')]);
 
 				// 選択した対象をすべて削除
-				$stmt = $pdo->query('SELECT * FROM delete_caches');
-				while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-					$key = $row['id'];
+				foreach ($keyList as $key) {
 					try {
 						// キャッシュの有効期限の取得
 						$datetime = $this->getExpirationTime($key);
@@ -956,7 +980,6 @@
 						$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
 					}
 				}
-				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
 				$pdo->commit();
 			}
 			catch (PDOException $e) {
@@ -1001,16 +1024,13 @@
 
 			$pdo->beginTransaction();
 			try {
-				// 削除対象の候補を一時テーブルに積む(厳密ではないが有効期限が短い順に積む)
-				$pdo->prepare(sprintf('CREATE TEMPORARY TABLE delete_caches AS SELECT id FROM tag_search_caches ORDER BY expiration_time DESC LIMIT %d OFFSET %d', $limit, $offset))->execute();
+				// 削除対象の候補の取得(有効期限が長い上位$offset件を残し、続く$limit件を対象とする)
+				$keyList = $this->selectDeleteTargets($pdo, sprintf('SELECT id FROM tag_search_caches ORDER BY expiration_time DESC LIMIT %d OFFSET %d', $limit, $offset));
 
 				// 選択した対象をすべて削除
-				$stmt = $pdo->query('SELECT * FROM delete_caches');
-				while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-					$key = $row['id'];
+				foreach ($keyList as $key) {
 					$this->deleteCacheDuringTransaction($key, $now, $updateTagSearchCachesStmt, $deleteTagSearchCachesStmt, $deleteTagSearchCachesTagsStmt);
 				}
-				$pdo->exec('DROP TEMPORARY TABLE delete_caches');
 				$pdo->commit();
 			}
 			catch (\PDOException $e) {
@@ -1070,7 +1090,7 @@
 		}
 
 		public function getPDO(): \PDO {
-			return $this->pdo ?? ($this->callback)();
+			return $this->pdo ??= ($this->callback)();
 		}
 
 		public function getCacheTable(): \TagSearchCaches {
@@ -1253,7 +1273,9 @@
 					$selectTagsIdStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 					$selectTagsIdStmt->execute();
 					// tag_idの取得
-					if ($selectTagsIdStmt->rowCount() === 0) {
+					$tagRow = $selectTagsIdStmt->fetch(\PDO::FETCH_ASSOC);
+					$selectTagsIdStmt->closeCursor();
+					if ($tagRow === false) {
 						$tagId = $id.sprintf('%02d', ++$cnt);
 						// tagsへの挿入
 						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_STR);
@@ -1262,7 +1284,7 @@
 						$insertTagsStmt->execute();
 					}
 					else {
-						$tagId = $selectTagsIdStmt->fetch()['id'];
+						$tagId = $tagRow['id'];
 					}
 					// posted_articles_tagsへの挿入
 					$insertPostedArticlesTagsStmt->bindValue(':article_id', $id, \PDO::PARAM_STR);
