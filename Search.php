@@ -1239,7 +1239,13 @@
 				$selectTagsListStmt->execute();
 				$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
 				// 新規に挿入するタグリストと削除するタグリスト
-				$normTagList = array_map(fn ($tag) => self::normToken($tag), $tagList);
+				// 正規化後に重複するタグは畳む
+				$normTagList = array_values(array_unique(array_map(self::normToken(...), $tagList)));
+				// 登録時のオリジナルのタグ名の取得のためのマップ
+				$orgNameMap = [];
+				foreach ($tagList as $tag) {
+					$orgNameMap[self::normToken($tag)] ??= trim($tag);
+				}
 				$insertTagList = [...array_diff($normTagList, $beforeTagList)];
 				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
 				$changeTagList = [...$insertTagList, ...$deleteTagList];
@@ -1256,7 +1262,7 @@
 						$tagId = $id.sprintf('%02d', ++$cnt);
 						// tagsへの挿入
 						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_STR);
-						$insertTagsStmt->bindValue(':org_name', trim($tag), \PDO::PARAM_STR);
+						$insertTagsStmt->bindValue(':org_name', $orgNameMap[$tag], \PDO::PARAM_STR);
 						$insertTagsStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 						$insertTagsStmt->execute();
 					}
