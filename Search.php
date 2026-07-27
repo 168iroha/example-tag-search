@@ -1218,6 +1218,7 @@
 		 * @param $id 記事のキー
 		 * @param $tagList タグのリスト
 		 * @param $updateCache trueのときキャッシュを更新する
+		 * @return bool trueのときタグIDの採番成功、falseのときタグIDの採番失敗
 		 */
 		public function set(string $id, array $tagList, bool $updateCache = true) {
 			$pdo = $this->getPDO();
@@ -1250,8 +1251,15 @@
 				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
 				$changeTagList = [...$insertTagList, ...$deleteTagList];
 				
+				// 連番の最大値を利用して採番する
+				$maxCntStmt = $pdo->prepare('SELECT MAX(id) FROM tags WHERE id LIKE ?');
+				$maxCntStmt->execute(["$id%"]);
+				$maxId = $maxCntStmt->fetchColumn();
+				$cnt = $maxId === false || $maxId === null ? 0 : (int)substr((string)$maxId, strlen((string)$maxId) - 2);
+				if ($cnt + count($insertTagList) >= 100) {
+					return false;
+				}
 				// タグ情報の登録
-				$cnt = 0;
 				foreach ($insertTagList as $tag) {
 					$selectTagsIdStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 					$selectTagsIdStmt->execute();
@@ -1295,6 +1303,8 @@
 				// 変更に係るタグに関連するキャッシュの削除
 				$this->deleteByTagList($changeTagList);
 			}
+
+			return true;
 		}
 
 		/**
