@@ -331,7 +331,8 @@
 		 * トークンを正規化する
 		 */
 		public static function normToken(string $token) {
-			return mb_strtoupper(normalizer_normalize(trim($token), Normalizer::FORM_KC));
+			$normalized = normalizer_normalize($token, Normalizer::FORM_KC);
+			return trim(mb_strtoupper($normalized === false ? $token : $normalized));
 		}
 		
 		public function __construct(string $query, int $limitTag = -1) {
@@ -373,7 +374,7 @@
 				if ($c === null) {
 					break;
 				}
-				switch ($t = trim($c)) {
+				switch ($t = preg_match('/\A[\s\p{Zs}\x00]\z/u', $c) === 1 ? '' : $c) {
 					case '':
 						// 単語区切りの場合は終了
 						if ($str !== '') {
