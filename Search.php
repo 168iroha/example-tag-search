@@ -63,6 +63,12 @@
 	 * 二項演算についてのツリー
 	 */
 	abstract class BinaryTree implements QueryTree {
+		/** 結合の優先順位(値が大きいほど強く結合) */
+		protected const LEVEL_MINUS = 0;
+		protected const LEVEL_OR = 1;
+		protected const LEVEL_AND = 2;
+		protected const LEVEL_TAG = 3;
+
 		/** @var array<QueryTree> 子要素 */
 		public array $children = [];
 		/** SQLにおいて連結をする演算子 */
@@ -71,6 +77,8 @@
 		private string $queryOp;
 		/** 結合の優先順位 */
 		private int $level;
+		/** 最初の子要素であった場合の結合の優先順位 */
+		private int $firstLevel;
 
 		/**
 		 * 可能ならばトークンをソートしてから構文木を構築するための並べ替えのルール
@@ -86,18 +94,6 @@
 			}
 			if ($b instanceof BinaryTree && !($a instanceof BinaryTree)) {
 				// BinaryTreeは先頭に持ってくる
-				return 1;
-			}
-			if ($a instanceof ParenTree && $b instanceof ParenTree) {
-				// ParenTree同士は再帰的に比較
-				return self::order($a->child, $b->child);
-			}
-			if ($a instanceof ParenTree && !($b instanceof ParenTree)) {
-				// ParenTreeは先頭に持ってくる
-				return -1;
-			}
-			if ($b instanceof ParenTree && !($a instanceof ParenTree)) {
-				// ParenTreeは先頭に持ってくる
 				return 1;
 			}
 			// BinaryTree同士はlevelの降順にする
@@ -116,32 +112,25 @@
 			return -1;
 		}
 
-		public function __construct(array $children, string $sqlOp, string $queryOp, int $level, bool $fixfirst = false) {
+		public function __construct(array $children, string $sqlOp, string $queryOp, int $level, int $firstLevel) {
 			$this->sqlOp = $sqlOp;
 			$this->queryOp = $queryOp;
 			$this->level = $level;
+			$this->firstLevel = $firstLevel;
 
 			$unsortChildren = [];
-			foreach ($children as $child) {
-				if ($child instanceof ParenTree) {
-					// 括弧内の演算がthisと同じ演算もしくはTagTreeなら展開する
-					$grandchild = $child->child;
-					if ($grandchild instanceof BinaryTree && $queryOp === $grandchild->queryOp) {
-						array_push($unsortChildren, ...$grandchild->children);
-					}
-					else if ($grandchild instanceof TagTree) {
-						$unsortChildren[] = $grandchild;
-					}
-					else {
-						$unsortChildren[] = $child;
-					}
+			foreach ($children as $index => $child) {
+				// 括弧内の演算がthisと同じ演算もしくはTagTreeなら展開する
+				// A-(B-C) = A-B-C は成り立たないように$level !== $firstLevelな場合は展開しない
+				if ($child instanceof BinaryTree && $queryOp === $child->queryOp && ($level === $firstLevel || $index === 0)) {
+					array_push($unsortChildren, ...$child->children);
 				}
 				else {
 					$unsortChildren[] = $child;
 				}
 			}
 
-			if ($fixfirst) {
+			if ($level !== $firstLevel) {
 				// 先頭要素のみ並べ替えないときはあらかじめ除外してからソートする
 				$first = array_shift($unsortChildren);
 				uasort($unsortChildren, self::order(...));
@@ -167,7 +156,7 @@
 		private function operandSql(QueryTree $child): string {
 			$sql = $child->sql();
 			// 子が複合SELECTを生成するときのみ導出テーブルで包んで結合の優先順位を確定させる
-			$isCompound = $child instanceof BinaryTree || ($child instanceof ParenTree && $child->child instanceof BinaryTree);
+			$isCompound = $child instanceof BinaryTree;
 			return $isCompound ? sprintf(self::SQL_PART_GROUP, $sql) : $sql;
 		}
 
@@ -198,23 +187,15 @@
 		 * 同等の構文木を生成するクエリの取得
 		 */
 		public function query(): string {
-			$child = $this->children[0];
-			$result = $child->query();
-			if (count($this->children) > 0) {
-				// 子の方が演算の優先順位が低いときは括弧で囲う
-				if ($child instanceof BinaryTree && $this->level > $child->level) {
-					$result = "({$result})";
+			$result = '';
+			foreach ($this->children as $index => $child) {
+				$query = $child->query();
+				// 文法上その位置に書けない優先順位のときは括弧で囲う
+				if ($child instanceof BinaryTree && $child->level <= ($index === 0 ? $this->firstLevel : $this->level)) {
+					$query = "({$query})";
 				}
 				// 各クエリを$queryOpで連結
-				for ($i = 1; $i < count($this->children); ++$i) {
-					$child = $this->children[$i];
-					$query = $child->query();
-					// 子の方が演算の優先順位が低いときは括弧で囲う
-					if ($child instanceof BinaryTree && $this->level > $child->level) {
-						$query = "({$query})";
-					}
-					$result .= "{$this->queryOp}{$query}";
-				}
+				$result .= $index === 0 ? $query : "{$this->queryOp}{$query}";
 			}
 			return $result;
 		}
@@ -225,7 +206,7 @@
 	 */
 	class AndTree extends BinaryTree {
 		public function __construct(array $children) {
-			parent::__construct($children, 'INTERSECT', ' ', 2);
+			parent::__construct($children, 'INTERSECT', ' ', self::LEVEL_AND, self::LEVEL_AND);
 		}
 	}
 
@@ -234,7 +215,7 @@
 	 */
 	class OrTree extends BinaryTree {
 		public function __construct(array $children) {
-			parent::__construct($children, 'UNION', 'OR', 1);
+			parent::__construct($children, 'UNION', 'OR', self::LEVEL_OR, self::LEVEL_OR);
 		}
 	}
 
@@ -243,44 +224,7 @@
 	 */
 	class MinusTree extends BinaryTree {
 		public function __construct(array $children) {
-			parent::__construct($children, 'EXCEPT', '-', 1, true);
-		}
-	}
-
-	/**
-	 * 括弧についてのツリー
-	 */
-	class ParenTree implements QueryTree {
-		/** 子要素 */
-		public QueryTree $child;
-
-		public function __construct(QueryTree $child) {
-			// 括弧を簡約化する
-			$this->child = $child instanceof ParenTree ? $child->child : $child;
-		}
-
-		/**
-		 * 検索結果を取得するSQLの取得
-		 */
-		public function sql(): string {
-			return "{$this->child->sql()}";
-		}
-
-		/**
-		 * フラット化したバインド変数の取得
-		 * @return array<string>
-		 */
-		public function bindVal(): array {
-			return $this->child->bindVal();
-		}
-
-		/**
-		 * 同等の構文木を生成するクエリの取得
-		 */
-		public function query(): string {
-			$query = $this->child->query();
-			// 子がTagTreeのときは括弧を外す
-			return $this->child instanceof TagTree ? $query : "({$query})";
+			parent::__construct($children, 'EXCEPT', '-', self::LEVEL_OR, self::LEVEL_MINUS);
 		}
 	}
 
@@ -324,6 +268,8 @@
 		private ?array $currentToken = null;
 		/** 出現したタグの数のカウント */
 		private int $countTag = 0;
+		/** 解析中の括弧の深さ(異常処理の判定用) */
+		private int $parenDepth = 0;
 		/** クエリに関する構文木 */
 		private ?QueryTree $tree;
 		
@@ -433,28 +379,31 @@
 		}
 		
 		private function expr() {
-			// クエリ演算子とSQLの演算子の対応付け
+			// クエリ演算子
 			$opArray = ['OR', '-'];
 			
 			$result = [$opArray[0] => [$this->term()], $opArray[1] => []];
-			while ($token = $this->getCurrentToken()) {
-				if ($token['type'] !== 'tag') {
-					if (in_array($token['str'], $opArray)) {
-						// タグ検索の演算からSQLの演算に変換する
-						$this->getNextToken();
-						$temp = $this->term();
-						if ($temp !== null) {
-							$result[$token['str']][] = $temp;
-						}
-						else break;
-					}
-					else break;
+			$op = $opArray[0];
+			while (true) {
+				$temp = $this->term();
+				if ($temp !== null) {
+					$result[$op][] = $temp;
 				}
-				else break;
+				// 次の演算子の取得(演算子以外が現れたときは解析を終了する)
+				$token = $this->getCurrentToken();
+				if ($token === null || $token['type'] === 'tag' || !in_array($token['str'], $opArray, true)) {
+					break;
+				}
+				$this->getNextToken();
+				$op = $token['str'];
 			}
 			// 構文木を構築
-			$tree = count($result[$opArray[0]]) === 1 ? $result[$opArray[0]][0] : new OrTree($result[$opArray[0]]);
-			if (count($result[$opArray[1]]) === 0) {
+			$tree = match (count($result[$opArray[0]])) {
+				0 => null,
+				1 => $result[$opArray[0]][0],
+				default => new OrTree($result[$opArray[0]]),
+			};
+			if ($tree === null || count($result[$opArray[1]]) === 0) {
 				// OR検索もマイナス検索もなかった場合/OR検索のみあった場合
 				return $tree;
 			}
@@ -465,13 +414,29 @@
 		}
 		
 		private function term() {
-			if ($this->getCurrentToken() === null) return null;
-	
-			$result = [$this->fact()];
+			$result = [];
 			while ($token = $this->getCurrentToken()) {
-				// ORと-と括弧は弾く
-				if ($token['type'] !== 'tag' && in_array($token['str'], ['OR', '-', ')'], true)) {
-					break;
+				if ($token['type'] === 'tag') {
+					// 正規化の結果として空になったタグは検索条件にならないため読み飛ばす
+					if ($token['str'] === '') {
+						$this->getNextToken();
+						continue;
+					}
+				}
+				else {
+					// ORと-と括弧は弾く
+					if (in_array($token['str'], ['OR', '-'], true)) {
+						break;
+					}
+					if ($token['str'] === ')') {
+						// 対応する開き括弧があるときはfactで処理する
+						if ($this->parenDepth > 0) {
+							break;
+						}
+						// 対応する開き括弧のない閉じ括弧は演算子として解釈できない異常のため読み飛ばす
+						$this->getNextToken();
+						continue;
+					}
 				}
 				// 共通集合をとる
 				$temp = $this->fact();
@@ -481,7 +446,11 @@
 				else break;
 			}
 			// 構文木を構築
-			return count($result) === 1 ? $result[0] : new AndTree($result);
+			return match (count($result)) {
+				0 => null,
+				1 => $result[0],
+				default => new AndTree($result),
+			};
 		} 
 		
 		private function fact() {
@@ -490,13 +459,15 @@
 	
 			if ($token['type'] !== 'tag' && $token['str'] === '(') {
 				$this->getNextToken();
+				++$this->parenDepth;
 				$temp = $this->expr();
 				// 括弧が閉じられていないときは補完する
 				$token = $this->getCurrentToken();
 				if ($token !== null && $token['type'] !== 'tag' && $token['str'] === ')') {
 					$this->getNextToken();
 				}
-				return $temp === null ? null : new ParenTree($temp);
+				--$this->parenDepth;
+				return $temp;
 			}
 			else {
 				$this->getNextToken();
