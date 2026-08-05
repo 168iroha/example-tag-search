@@ -1078,7 +1078,7 @@
 		 * キャッシュのキーの取得
 		 * @param $query キャッシュのキー
 		 */
-		private function getCacheKey(string $query) {
+		public function getCacheKey(string $query) {
 			return hash('sha256', $query);
 		}
 
