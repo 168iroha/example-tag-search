@@ -65,12 +65,20 @@
 	 * 二項演算についてのツリー
 	 */
 	abstract class BinaryTree implements QueryTree {
+		/** 結合の優先順位(値が大きいほど強く結合) */
+		protected const LEVEL_MINUS = 0;
+		protected const LEVEL_OR = 1;
+		protected const LEVEL_AND = 2;
+		protected const LEVEL_TAG = 3;
+
 		/** @var array<QueryTree> 子要素 */
 		public array $children = [];
 		/** クエリにおいて連結をする演算子 */
 		private string $queryOp;
 		/** 結合の優先順位 */
 		private int $level;
+		/** 最初の子要素であった場合の結合の優先順位 */
+		private int $firstLevel;
 
 		/**
 		 * 可能ならばトークンをソートしてから構文木を構築するための並べ替えのルール
@@ -86,18 +94,6 @@
 			}
 			if ($b instanceof BinaryTree && !($a instanceof BinaryTree)) {
 				// BinaryTreeは先頭に持ってくる
-				return 1;
-			}
-			if ($a instanceof ParenTree && $b instanceof ParenTree) {
-				// ParenTree同士は再帰的に比較
-				return self::order($a->child, $b->child);
-			}
-			if ($a instanceof ParenTree && !($b instanceof ParenTree)) {
-				// ParenTreeは先頭に持ってくる
-				return -1;
-			}
-			if ($b instanceof ParenTree && !($a instanceof ParenTree)) {
-				// ParenTreeは先頭に持ってくる
 				return 1;
 			}
 			// BinaryTree同士はlevelの降順にする
@@ -116,31 +112,24 @@
 			return -1;
 		}
 
-		public function __construct(array $children, string $queryOp, int $level, bool $fixfirst = false) {
+		public function __construct(array $children, string $queryOp, int $level, int $firstLevel) {
 			$this->queryOp = $queryOp;
 			$this->level = $level;
+			$this->firstLevel = $firstLevel;
 
 			$unsortChildren = [];
-			foreach ($children as $child) {
-				if ($child instanceof ParenTree) {
-					// 括弧内の演算がthisと同じ演算もしくはTagTreeなら展開する
-					$grandchild = $child->child;
-					if ($grandchild instanceof BinaryTree && $queryOp === $grandchild->queryOp) {
-						array_push($unsortChildren, ...$grandchild->children);
-					}
-					else if ($grandchild instanceof TagTree) {
-						$unsortChildren[] = $grandchild;
-					}
-					else {
-						$unsortChildren[] = $child;
-					}
+			foreach ($children as $index => $child) {
+				// 括弧内の演算がthisと同じ演算もしくはTagTreeなら展開する
+				// A-(B-C) = A-B-C は成り立たないように$level !== $firstLevelな場合は展開しない
+				if ($child instanceof BinaryTree && $queryOp === $child->queryOp && ($level === $firstLevel || $index === 0)) {
+					array_push($unsortChildren, ...$child->children);
 				}
 				else {
 					$unsortChildren[] = $child;
 				}
 			}
 
-			if ($fixfirst) {
+			if ($level !== $firstLevel) {
 				// 先頭要素のみ並べ替えないときはあらかじめ除外してからソートする
 				$first = array_shift($unsortChildren);
 				uasort($unsortChildren, self::order(...));
@@ -191,23 +180,15 @@
 		 * 同等の構文木を生成するクエリの取得
 		 */
 		public function query(): string {
-			$child = $this->children[0];
-			$result = $child->query();
-			if (count($this->children) > 0) {
-				// 子の方が演算の優先順位が低いときは括弧で囲う
-				if ($child instanceof BinaryTree && $this->level > $child->level) {
-					$result = "({$result})";
+			$result = '';
+			foreach ($this->children as $index => $child) {
+				$query = $child->query();
+				// 文法上その位置に書けない優先順位のときは括弧で囲う
+				if ($child instanceof BinaryTree && $child->level <= ($index === 0 ? $this->firstLevel : $this->level)) {
+					$query = "({$query})";
 				}
 				// 各クエリを$queryOpで連結
-				for ($i = 1; $i < count($this->children); ++$i) {
-					$child = $this->children[$i];
-					$query = $child->query();
-					// 子の方が演算の優先順位が低いときは括弧で囲う
-					if ($child instanceof BinaryTree && $this->level > $child->level) {
-						$query = "({$query})";
-					}
-					$result .= "{$this->queryOp}{$query}";
-				}
+				$result .= $index === 0 ? $query : "{$this->queryOp}{$query}";
 			}
 			return $result;
 		}
@@ -221,7 +202,7 @@
 		private const SQL_PART_SELECT = 'SELECT t%d.article_id FROM (%s) AS t%d INNER JOIN (%s) AS t%d ON t%d.article_id = t%d.article_id';
 
 		public function __construct(array $children) {
-			parent::__construct($children, ' ', 2);
+			parent::__construct($children, ' ', self::LEVEL_AND, self::LEVEL_AND);
 		}
 
 		/**
@@ -244,7 +225,7 @@
 	 */
 	class OrTree extends BinaryTree {
 		public function __construct(array $children) {
-			parent::__construct($children, 'OR', 1);
+			parent::__construct($children, 'OR', self::LEVEL_OR, self::LEVEL_OR);
 		}
 
 		/**
@@ -266,7 +247,7 @@
 		private const SQL_PART_SELECT = 'SELECT article_id FROM (%s) AS t%d WHERE article_id NOT IN (%s)';
 
 		public function __construct(array $children) {
-			parent::__construct($children, '-', 1, true);
+			parent::__construct($children, '-', self::LEVEL_OR, self::LEVEL_MINUS);
 		}
 
 		/**
@@ -361,6 +342,8 @@
 		private ?array $currentToken = null;
 		/** 出現したタグの数のカウント */
 		private int $countTag = 0;
+		/** 解析中の括弧の深さ(異常処理の判定用) */
+		private int $parenDepth = 0;
 		/** クエリに関する構文木 */
 		private ?QueryTree $tree;
 		
@@ -368,7 +351,8 @@
 		 * トークンを正規化する
 		 */
 		public static function normToken(string $token) {
-			return mb_strtoupper(normalizer_normalize(trim($token), Normalizer::FORM_KC));
+			$normalized = normalizer_normalize($token, Normalizer::FORM_KC);
+			return trim(mb_strtoupper($normalized === false ? $token : $normalized));
 		}
 		
 		public function __construct(string $query, int $limitTag = -1) {
@@ -410,7 +394,7 @@
 				if ($c === null) {
 					break;
 				}
-				switch ($t = trim($c)) {
+				switch ($t = preg_match('/\A[\s\p{Zs}\x00]\z/u', $c) === 1 ? '' : $c) {
 					case '':
 						// 単語区切りの場合は終了
 						if ($str !== '') {
@@ -469,28 +453,31 @@
 		}
 		
 		private function expr() {
-			// クエリ演算子とSQLの演算子の対応付け
+			// クエリ演算子
 			$opArray = ['OR', '-'];
 			
 			$result = [$opArray[0] => [$this->term()], $opArray[1] => []];
-			while ($token = $this->getCurrentToken()) {
-				if ($token['type'] !== 'tag') {
-					if (in_array($token['str'], $opArray)) {
-						// タグ検索の演算からSQLの演算に変換する
-						$this->getNextToken();
-						$temp = $this->term();
-						if ($temp !== null) {
-							$result[$token['str']][] = $temp;
-						}
-						else break;
-					}
-					else break;
+			$op = $opArray[0];
+			while (true) {
+				$temp = $this->term();
+				if ($temp !== null) {
+					$result[$op][] = $temp;
 				}
-				else break;
+				// 次の演算子の取得(演算子以外が現れたときは解析を終了する)
+				$token = $this->getCurrentToken();
+				if ($token === null || $token['type'] === 'tag' || !in_array($token['str'], $opArray, true)) {
+					break;
+				}
+				$this->getNextToken();
+				$op = $token['str'];
 			}
 			// 構文木を構築
-			$tree = count($result[$opArray[0]]) === 1 ? $result[$opArray[0]][0] : new OrTree($result[$opArray[0]]);
-			if (count($result[$opArray[1]]) === 0) {
+			$tree = match (count($result[$opArray[0]])) {
+				0 => null,
+				1 => $result[$opArray[0]][0],
+				default => new OrTree($result[$opArray[0]]),
+			};
+			if ($tree === null || count($result[$opArray[1]]) === 0) {
 				// OR検索もマイナス検索もなかった場合/OR検索のみあった場合
 				return $tree;
 			}
@@ -501,13 +488,29 @@
 		}
 		
 		private function term() {
-			if ($this->getCurrentToken() === null) return null;
-	
-			$result = [$this->fact()];
+			$result = [];
 			while ($token = $this->getCurrentToken()) {
-				// ORと-と括弧は弾く
-				if ($token['type'] !== 'tag' && in_array($token['str'], ['OR', '-', ')'], true)) {
-					break;
+				if ($token['type'] === 'tag') {
+					// 正規化の結果として空になったタグは検索条件にならないため読み飛ばす
+					if ($token['str'] === '') {
+						$this->getNextToken();
+						continue;
+					}
+				}
+				else {
+					// ORと-と括弧は弾く
+					if (in_array($token['str'], ['OR', '-'], true)) {
+						break;
+					}
+					if ($token['str'] === ')') {
+						// 対応する開き括弧があるときはfactで処理する
+						if ($this->parenDepth > 0) {
+							break;
+						}
+						// 対応する開き括弧のない閉じ括弧は演算子として解釈できない異常のため読み飛ばす
+						$this->getNextToken();
+						continue;
+					}
 				}
 				// 共通集合をとる
 				$temp = $this->fact();
@@ -517,7 +520,11 @@
 				else break;
 			}
 			// 構文木を構築
-			return count($result) === 1 ? $result[0] : new AndTree($result);
+			return match (count($result)) {
+				0 => null,
+				1 => $result[0],
+				default => new AndTree($result),
+			};
 		} 
 		
 		private function fact() {
@@ -526,13 +533,15 @@
 	
 			if ($token['type'] !== 'tag' && $token['str'] === '(') {
 				$this->getNextToken();
+				++$this->parenDepth;
 				$temp = $this->expr();
 				// 括弧が閉じられていないときは補完する
 				$token = $this->getCurrentToken();
 				if ($token !== null && $token['type'] !== 'tag' && $token['str'] === ')') {
 					$this->getNextToken();
 				}
-				return $temp === null ? null : new ParenTree($temp);
+				--$this->parenDepth;
+				return $temp;
 			}
 			else {
 				$this->getNextToken();
@@ -1145,7 +1154,7 @@
 		 * キャッシュのキーの取得
 		 * @param $query キャッシュのキー
 		 */
-		private function getCacheKey(string $query) {
+		public function getCacheKey(string $query) {
 			return hash('sha256', $query);
 		}
 
@@ -1285,6 +1294,7 @@
 		 * @param $id 記事のキー
 		 * @param $tagList タグのリスト
 		 * @param $updateCache trueのときキャッシュを更新する
+		 * @return bool trueのときタグIDの採番成功、falseのときタグIDの採番失敗
 		 */
 		public function set(string $id, array $tagList, bool $updateCache = true) {
 			$pdo = $this->getPDO();
@@ -1306,13 +1316,26 @@
 				$selectTagsListStmt->execute();
 				$beforeTagList = array_map(fn ($tag) => self::normToken($tag[0]), $selectTagsListStmt->fetchAll(\PDO::FETCH_NUM));
 				// 新規に挿入するタグリストと削除するタグリスト
-				$normTagList = array_map(fn ($tag) => self::normToken($tag), $tagList);
+				// 正規化後に重複するタグは畳む
+				$normTagList = array_values(array_unique(array_map(self::normToken(...), $tagList)));
+				// 登録時のオリジナルのタグ名の取得のためのマップ
+				$orgNameMap = [];
+				foreach ($tagList as $tag) {
+					$orgNameMap[self::normToken($tag)] ??= trim($tag);
+				}
 				$insertTagList = [...array_diff($normTagList, $beforeTagList)];
 				$deleteTagList = [...array_diff($beforeTagList, $normTagList)];
 				$changeTagList = [...$insertTagList, ...$deleteTagList];
 				
+				// 連番の最大値を利用して採番する
+				$maxCntStmt = $pdo->prepare('SELECT MAX(id) FROM tags WHERE id LIKE ?');
+				$maxCntStmt->execute(["$id%"]);
+				$maxId = $maxCntStmt->fetchColumn();
+				$cnt = $maxId === false || $maxId === null ? 0 : (int)substr((string)$maxId, strlen((string)$maxId) - 2);
+				if ($cnt + count($insertTagList) >= 100) {
+					return false;
+				}
 				// タグ情報の登録
-				$cnt = 0;
 				foreach ($insertTagList as $tag) {
 					$selectTagsIdStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 					$selectTagsIdStmt->execute();
@@ -1323,7 +1346,7 @@
 						$tagId = $id.sprintf('%02d', ++$cnt);
 						// tagsへの挿入
 						$insertTagsStmt->bindValue(':id', $tagId, \PDO::PARAM_STR);
-						$insertTagsStmt->bindValue(':org_name', trim($tag), \PDO::PARAM_STR);
+						$insertTagsStmt->bindValue(':org_name', $orgNameMap[$tag], \PDO::PARAM_STR);
 						$insertTagsStmt->bindValue(':norm_name', $tag, \PDO::PARAM_STR);
 						$insertTagsStmt->execute();
 					}
@@ -1356,6 +1379,8 @@
 				// 変更に係るタグに関連するキャッシュの削除
 				$this->deleteByTagList($changeTagList);
 			}
+
+			return true;
 		}
 
 		/**

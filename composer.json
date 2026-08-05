@@ -1,0 +1,12 @@
+{
+    "name": "168iroha/example-tag-search",
+    "description": "PHPとMySQLを利用したタグ検索",
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:stable": "phpunit --exclude-group known-issue",
+        "test:known-issue": "phpunit --group known-issue"
+    }
+}
